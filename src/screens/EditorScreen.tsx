@@ -14,6 +14,10 @@ export function EditorScreen() {
   const setPhoto = useEditorStore((s) => s.setPhoto);
   const addImage = useEditorStore((s) => s.addImage);
   const addShape = useEditorStore((s) => s.addShape);
+  const addPaint = useEditorStore(s => s.addPaint);
+  const [brushColor, setBrushColor] = useState('#ff508e');
+  const [brushSize, setBrushSize] = useState(20);
+  const [eraser, setEraser] = useState(false);
   const canvas = useRef<PhotoCanvasHandle>(null);
   const [busy, setBusy] = useState(false);
   const [mode, setMode] = useState<InteractionMode>('layer');
@@ -47,20 +51,28 @@ export function EditorScreen() {
     finally { setBusy(false); }
   }
   return <SafeAreaView style={styles.screen}>
-    <View style={styles.header}><Text style={styles.brand}>PHOTO STUDIO <Text style={styles.version}>v0.3</Text></Text>
+    <View style={styles.header}><Text style={styles.brand}>PHOTO STUDIO <Text style={styles.version}>v0.5</Text></Text>
       <ToolButton label="Nuevo" onPress={() => importImage(true)} /></View>
-    <View style={styles.workspace}>{document ? <PhotoCanvas key={`${document.width}-${document.height}`} ref={canvas} document={document} mode={mode} /> :
+    <View style={styles.workspace}>{document ? <PhotoCanvas key={`${document.width}-${document.height}`} ref={canvas} document={document} mode={mode} brush={{ color: brushColor, size: brushSize, eraser }} /> :
       <View style={styles.empty}><Text style={styles.emptyTitle}>Tu lienzo te espera</Text><Text style={styles.hint}>Importa una imagen para comenzar.</Text><ToolButton label="Elegir imagen" onPress={() => importImage(true)} /></View>}</View>
     {document && <View style={styles.modeRow}>
       <ToolButton label={mode === 'layer' ? '✓ Editar capa' : 'Editar capa'} onPress={() => setMode('layer')} />
       <ToolButton label={mode === 'view' ? '✓ Mover vista' : 'Mover vista'} onPress={() => setMode('view')} />
+      <ToolButton label={mode === 'brush' ? '✓ Pincel' : 'Pincel'} onPress={() => { if (!document.layers.some(l => l.id === document.selectedId && l.type === 'paint')) addPaint(); setMode('brush'); }} />
       <ToolButton label="↶ Deshacer" onPress={undo} disabled={!canUndo} />
       <ToolButton label="↷ Rehacer" onPress={redo} disabled={!canRedo} />
     </View>}
+    {document && mode === 'brush' && <View style={styles.modeRow}>
+      {['#ff508e','#ffffff','#111111','#25c5ff','#ffe05a','#65e89b'].map(color => <Pressable key={color} onPress={() => {setBrushColor(color);setEraser(false);}} style={{ width: 28, height: 28, backgroundColor: color, borderRadius: 14, borderWidth: brushColor === color && !eraser ? 3 : 1, borderColor: '#a78bfa' }} />)}
+      <ToolButton label={eraser ? '✓ Borrador' : 'Borrador'} onPress={() => setEraser(!eraser)} />
+      <ToolButton label="−" onPress={() => setBrushSize(v => Math.max(2, v / 1.5))} />
+      <Text style={styles.hint}>{Math.round(brushSize)} px</Text>
+      <ToolButton label="+" onPress={() => setBrushSize(v => Math.min(300, v * 1.5))} />
+    </View>}
     {document && <LayersPanel />}
     <View style={styles.footer}>
-      <View style={styles.actions}><ToolButton label="+ Imagen" onPress={() => importImage(false)} disabled={!document || busy} /><ToolButton label="+ Forma" onPress={addShape} disabled={!document || busy} /><ToolButton label="Vista 1:1" onPress={() => canvas.current?.reset()} disabled={!document || busy} /><ToolButton label={busy ? 'Guardando...' : 'Exportar'} onPress={exportPreview} disabled={!document || busy} /></View>
-      <Text style={styles.hint}>Editar capa: tocar, arrastrar, pellizcar y rotar · Mover vista: navegar el lienzo</Text>
+      <View style={styles.actions}><ToolButton label="+ Imagen" onPress={() => importImage(false)} disabled={!document || busy} /><ToolButton label="+ Pintura" onPress={() => { addPaint(); setMode('brush'); }} disabled={!document || busy} /><ToolButton label="+ Forma" onPress={addShape} disabled={!document || busy} /><ToolButton label="Vista 1:1" onPress={() => canvas.current?.reset()} disabled={!document || busy} /><ToolButton label={busy ? 'Guardando...' : 'Exportar'} onPress={exportPreview} disabled={!document || busy} /></View>
+      <Text style={styles.hint}>Pincel: dibujar en una capa de pintura · Vista: navegar · Capa: transformar</Text>
       {busy && <ActivityIndicator color="#c6a6ff" />}
     </View>
   </SafeAreaView>;

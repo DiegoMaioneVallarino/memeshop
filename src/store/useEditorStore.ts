@@ -14,6 +14,8 @@ type State = {
   setPhoto: (asset: PhotoAsset) => void;
   addImage: (asset: PhotoAsset) => void;
   addShape: () => void;
+  addPaint: () => void;
+  appendStroke: (id: string, stroke: import('../types/editor').BrushStroke) => void;
   select: (id: string | null) => void;
   update: (id: string, patch: Partial<EditorLayer>) => void;
   move: (id: string, direction: -1 | 1) => void;
@@ -58,6 +60,16 @@ export const useEditorStore = create<State>((set) => ({
     const w = width * .35, h = height * .22;
     const layer: EditorLayer = { id: makeId(), type: 'shape', name: 'Rectángulo', color: '#a78bfa', x: (width-w)/2, y: (height-h)/2, width: w, height: h, rotation: 0, opacity: 1, visible: true };
     return { document: { ...s.document, layers: [...s.document.layers, layer], selectedId: layer.id } };
+  }),
+  addPaint: () => set(s => {
+    if (!s.document) return s;
+    const { width, height } = s.document;
+    const layer: EditorLayer = { id: makeId(), type: 'paint', name: 'Pintura', x: 0, y: 0, width, height, rotation: 0, opacity: 1, visible: true, strokes: [] };
+    return { document: { ...s.document, layers: [...s.document.layers, layer], selectedId: layer.id } };
+  }),
+  appendStroke: (id, stroke) => set(s => {
+    if (!s.document) return s;
+    return { document: { ...s.document, layers: s.document.layers.map(l => l.id === id && l.type === 'paint' ? { ...l, strokes: [...l.strokes, stroke] } : l) } };
   }),
   select: (id) => set((s) => s.document ? { document: { ...s.document, selectedId: id } } : s),
   update: (id, patch) => set((s) => {

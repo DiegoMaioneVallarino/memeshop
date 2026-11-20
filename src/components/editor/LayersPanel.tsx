@@ -18,11 +18,20 @@ export function LayersPanel() {
     <ScrollView style={styles.list} nestedScrollEnabled>
       {[...doc.layers].reverse().map((layer) => <Pressable key={layer.id} onPress={() => select(layer.id)}
         style={[styles.layer, layer.id === doc.selectedId && styles.selected]}>
-        <Text style={styles.layerName} numberOfLines={1}>{layer.type === 'image' ? '▧' : '▣'}  {layer.name}</Text>
+        <Text style={styles.layerName} numberOfLines={1}>{layer.type === 'image' ? '▧' : layer.type === 'paint' ? '✎' : '▣'}  {layer.name}</Text>
         <Text style={styles.meta}>{Math.round(layer.opacity * 100)}%</Text>
         <Action title={layer.visible ? '◉' : '○'} onPress={() => update(layer.id, { visible: !layer.visible })} />
       </Pressable>)}
     </ScrollView>
+    {selected && selected.type === 'image' && <View style={styles.inspector}>
+      <Text style={styles.heading}>AJUSTES DE IMAGEN</Text>
+      {(['brightness','contrast','saturation'] as const).map(k => <View key={k} style={styles.controls}>
+        <Text style={styles.meta}>{k === 'brightness' ? 'Brillo' : k === 'contrast' ? 'Contraste' : 'Saturación'}</Text>
+        <Action title="−" onPress={() => update(selected.id, { adjustments: { brightness: 0, contrast: 0, saturation: 0, ...selected.adjustments, [k]: Math.max(-1, (selected.adjustments?.[k] ?? 0) - .1) } } as any)} />
+        <Text style={styles.meta}>{(selected.adjustments?.[k] ?? 0).toFixed(1)}</Text>
+        <Action title="+" onPress={() => update(selected.id, { adjustments: { brightness: 0, contrast: 0, saturation: 0, ...selected.adjustments, [k]: Math.min(1, (selected.adjustments?.[k] ?? 0) + .1) } } as any)} />
+      </View>)}
+    </View>}
     {selected && <View style={styles.inspector}>
       <Text style={styles.heading}>TRANSFORMAR · {selected.name}</Text>
       <View style={styles.controls}>
