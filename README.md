@@ -1,36 +1,37 @@
-# Photo Studio v0.1 — React Native + Skia
+# Photo Studio v0.2 — motor de capas
 
-Este paquete contiene `src/` y `App.tsx` para un proyecto Expo **blank-typescript**.
+Este ZIP contiene `App.tsx` y `src/` para reemplazar la v0.1 dentro del proyecto Expo blank-typescript.
 
-## Crear y configurar
+## Instalación
 
 ```bash
 npx create-expo-app@latest photo-studio --template blank-typescript
 cd photo-studio
 npx expo install @shopify/react-native-skia react-native-gesture-handler react-native-reanimated react-native-worklets expo-image-picker expo-media-library expo-file-system expo-dev-client
 npm install zustand
-```
-
-Copia `src/` y `App.tsx` a la raíz del proyecto, sustituyendo el `App.tsx` inicial.
-
-Para desarrollo nativo:
-
-```bash
 npx expo run:android
 ```
 
-Para iOS se requiere macOS o EAS Build.
+Copia `App.tsx` y `src/` del ZIP a la raíz del proyecto. Si ya tienes v0.1, sustituye esos archivos.
 
 ## Funciones
 
-- Importar imágenes de la galería.
-- Canvas Skia con zoom, arrastre y rotación multitáctil.
-- Restablecer vista.
-- Exportar una **captura de la vista del canvas** a la galería.
+- Documento con dimensiones basadas en la primera imagen.
+- Capas de imagen y rectángulo con orden de apilamiento.
+- Seleccionar, ocultar, duplicar, eliminar y subir/bajar capas.
+- Posición, tamaño, rotación y opacidad independientes mediante botones del inspector.
+- Zoom, desplazamiento y rotación de la vista mediante gestos.
+- Exportación PNG de la vista del canvas a la galería.
 
-## Límites explícitos de esta versión
+## Limitaciones
 
-- La exportación es a resolución del canvas en pantalla, **no** a resolución original.
-- No incluye capas, máscaras, historial ni persistencia de proyectos todavía.
-- El zoom se centra en el lienzo, no en el punto exacto entre los dedos.
-- No se han ejecutado compilaciones Android/iOS en este entorno: puede requerir ajustes según la versión de Expo/Skia instalada.
+- La exportación sigue siendo una captura de pantalla del canvas, no exportación de documento a resolución original.
+- Las transformaciones de capas se hacen desde el inspector; el canvas todavía no tiene manipulación directa por gestos de cada capa.
+- No hay historial de deshacer/rehacer, texto, máscaras ni persistencia de proyectos.
+- Los archivos importados se referencian por URI local; pueden dejar de estar disponibles después de limpiar la caché.
+- No se ejecutaron compilaciones Android/iOS aquí. Podrían requerirse ajustes según las versiones de Expo/Skia.
+- "Vista 1:1" restablece las transformaciones de vista a su ajuste inicial; no representa píxeles 1:1.
+
+## Commit sugerido
+
+`feat(editor): add layer stack and independent layer transforms`
