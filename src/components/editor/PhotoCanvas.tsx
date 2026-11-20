@@ -135,9 +135,6 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       const x = (dx * c + dy * s) / (f * vp.zoom), y = (-dx * s + dy * c) / (f * vp.zoom);
       update(a.id, { x: a.layer.x + x, y: a.layer.y + y });
       a.changed = true;
-    } else {
-      const next = { ...a.vp, x: a.vp.x + dx, y: a.vp.y + dy };
-      vpRef.current = next; setViewport(next);
     }
   };
   const pinch = (scale: number) => {
@@ -179,22 +176,37 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   const reset = () => { const next = { zoom: 1, x: 0, y: 0, rotation: 0 }; vpRef.current = next; setViewport(next); };
   useImperativeHandle(ref, () => ({ snapshotBase64: () => canvas.current?.makeImageSnapshot()?.encodeToBase64() ?? null, reset }));
 
-  // All gestures share one transaction. runOnJS ensures Zustand updates stay on JS thread.
+  // One finger edits the selected object (or paints). Two fingers always navigate
+  // the camera: midpoint translation + pinch zoom, independent of selected layer.
+  const camera = useRef<{ vp: Viewport; panX: number; panY: number; scale: number } | null>(null);
+  const cameraStart = () => {
+    if (!camera.current) camera.current = { vp: { ...vpRef.current }, panX: 0, panY: 0, scale: 1 };
+    // A second finger must not commit a partial brush stroke as a camera operation.
+    if (active.current) end();
+  };
+  const cameraUpdate = (patch: { panX?: number; panY?: number; scale?: number }) => {
+    const c = camera.current;
+    if (!c) return;
+    Object.assign(c, patch);
+    const next = { ...c.vp, x: c.vp.x + c.panX, y: c.vp.y + c.panY, zoom: clamp(c.vp.zoom * c.scale, .2, 12) };
+    vpRef.current = next;
+    setViewport(next);
+  };
   const gesture = useMemo(() => {
-    const pan = Gesture.Pan().runOnJS(true).minDistance(mode === 'brush' ? 0 : 3)
+    const oneFinger = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(mode === 'brush' ? 0 : 2)
       .onStart(e => begin(e.x - e.translationX, e.y - e.translationY))
       .onUpdate(e => mode === 'brush' ? drawAt(e.x, e.y) : drag(e.translationX, e.translationY))
       .onFinalize(end);
-    const zoom = Gesture.Pinch().runOnJS(true)
-      .onStart(e => begin(e.focalX, e.focalY))
-      .onUpdate(e => pinch(e.scale))
-      .onFinalize(end);
-    const rotation = Gesture.Rotation().runOnJS(true)
-      .onStart(e => begin(e.anchorX, e.anchorY))
-      .onUpdate(e => rotate(e.rotation))
-      .onFinalize(end);
-    const tap = Gesture.Tap().runOnJS(true).onEnd(e => { begin(e.x, e.y); end(); });
-    return mode === 'brush' ? Gesture.Race(pan, tap) : Gesture.Race(Gesture.Simultaneous(zoom, rotation), pan, tap);
+    const twoFinger = Gesture.Pan().runOnJS(true).minPointers(2).averageTouches(true)
+      .onStart(() => cameraStart())
+      .onUpdate(e => cameraUpdate({ panX: e.translationX, panY: e.translationY }))
+      .onFinalize(() => { camera.current = null; });
+    const pinchGesture = Gesture.Pinch().runOnJS(true)
+      .onStart(() => cameraStart())
+      .onUpdate(e => cameraUpdate({ scale: e.scale }))
+      .onFinalize(() => { camera.current = null; });
+    const tap = Gesture.Tap().runOnJS(true).onEnd(e => { if (mode !== 'brush') { begin(e.x, e.y); end(); } });
+    return Gesture.Race(Gesture.Simultaneous(twoFinger, pinchGesture), oneFinger, tap);
   }, [mode, document.width, document.height]);
 
   return <GestureDetector gesture={gesture}>
