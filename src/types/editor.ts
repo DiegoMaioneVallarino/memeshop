@@ -1,7 +1,8 @@
-export type ImageLayer = { id: string; type: 'image'; name: string; uri: string; sourceWidth: number; sourceHeight: number; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
+export type MaskStroke = { id: string; points: StrokePoint[]; radius: number; opacity: number; spread: number; restore: boolean };
+export type ImageLayer = { id: string; type: 'image'; name: string; uri: string; sourceWidth: number; sourceHeight: number; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean; maskStrokes?: MaskStroke[] };
 export type ShapeLayer = { id: string; type: 'shape'; name: string; color: string; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
 export type StrokePoint = { x: number; y: number };
-export type BrushStroke = { id: string; points: StrokePoint[]; color: string; size: number; eraser: boolean };
+export type BrushStroke = { id: string; points: StrokePoint[]; color: string; size: number; eraser: boolean; opacity?: number; hardness?: number; spread?: number };
 export type PaintLayer = { id: string; type: 'paint'; name: string; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean; strokes: BrushStroke[] };
 export type PhotoAdjustments = { brightness: number; contrast: number; saturation: number };
 export type EditorLayer = (ImageLayer & { adjustments?: PhotoAdjustments }) | ShapeLayer | PaintLayer;

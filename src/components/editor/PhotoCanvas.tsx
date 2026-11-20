@@ -1,13 +1,13 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
-import { Canvas, Group, Image as SkiaImage, Rect, Path, ColorMatrix, Paint, useImage } from '@shopify/react-native-skia';
+import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint } from '../../types/editor';
+import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke } from '../../types/editor';
 import { useEditorStore } from '../../store/useEditorStore';
 
 export type PhotoCanvasHandle = { snapshotBase64: () => string | null; reset: () => void };
-export type InteractionMode = 'layer' | 'view' | 'brush';
-export type BrushOptions = { color: string; size: number; eraser: boolean };
+export type InteractionMode = 'layer' | 'view' | 'brush' | 'mask';
+export type BrushOptions = { color: string; size: number; eraser: boolean; opacity?: number; hardness?: number; spread?: number; restore?: boolean };
 type Viewport = { zoom: number; x: number; y: number; rotation: number };
 const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
 
@@ -21,16 +21,26 @@ function StrokeShape({ stroke }: { stroke: BrushStroke }) {
   if (!stroke.points.length) return null;
   const p = stroke.points;
   const d = p.length === 1 ? `M ${p[0].x} ${p[0].y} l 0.01 0` : `M ${p[0].x} ${p[0].y} ` + p.slice(1).map(v => `L ${v.x} ${v.y}`).join(' ');
-  return <Path path={d} color={stroke.color} style="stroke" strokeWidth={stroke.size} strokeCap="round" strokeJoin="round" blendMode={stroke.eraser ? 'dstOut' : 'srcOver'} />;
+  return <Path path={d} color={stroke.color} style="stroke" strokeWidth={stroke.size} strokeCap="round" strokeJoin="round" opacity={stroke.opacity ?? 1} blendMode={stroke.eraser ? 'dstOut' : 'srcOver'} />;
 }
 function PaintContent({ layer }: { layer: PaintLayer }) {
   return <Group layer>{layer.strokes.map(stroke => <StrokeShape key={stroke.id} stroke={stroke} />)}</Group>;
 }
-function ImageContent({ layer }: { layer: ImageLayer }) {
-  const image = useImage(layer.uri);
-  return image ? <Group layer={layer.adjustments ? <Paint><ColorMatrix matrix={adjustmentMatrix(layer.adjustments.brightness, layer.adjustments.contrast, layer.adjustments.saturation)} /></Paint> : undefined}><SkiaImage image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" /></Group> : null;
+function MaskPath({ stroke }: { stroke: MaskStroke }) {
+  const p = stroke.points;
+  if (!p.length) return null;
+  const d = p.length === 1 ? `M ${p[0].x} ${p[0].y} l .01 0` : `M ${p[0].x} ${p[0].y} ` + p.slice(1).map(v => `L ${v.x} ${v.y}`).join(' ');
+  return <Path path={d} style="stroke" strokeWidth={stroke.radius * 2} strokeCap="round" strokeJoin="round" color={stroke.restore ? '#ffffff' : '#000000'} opacity={stroke.opacity} />;
 }
-function LayerContent({ layer, selected }: { layer: EditorLayer; selected: boolean }) {
+function ImageContent({ layer, preview }: { layer: ImageLayer; preview?: MaskStroke | null }) {
+  const image = useImage(layer.uri);
+  if (!image) return null;
+  const content = <Group layer={layer.adjustments ? <Paint><ColorMatrix matrix={adjustmentMatrix(layer.adjustments.brightness, layer.adjustments.contrast, layer.adjustments.saturation)} /></Paint> : undefined}><SkiaImage image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" /></Group>;
+  const strokes = [...(layer.maskStrokes ?? []), ...(preview ? [preview] : [])];
+  if (!strokes.length) return content;
+  return <Mask mode="luminance" mask={<Group><Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />{strokes.map(st => <MaskPath key={st.id} stroke={st} />)}</Group>}>{content}</Mask>;
+}
+function LayerContent({ layer, selected, previewMask }: { layer: EditorLayer; selected: boolean; previewMask?: MaskStroke | null }) {
   if (!layer.visible) return null;
   const transform = [
     { translateX: layer.x + layer.width / 2 }, { translateY: layer.y + layer.height / 2 },
@@ -38,12 +48,21 @@ function LayerContent({ layer, selected }: { layer: EditorLayer; selected: boole
   ];
   return <Group transform={transform}>
     <Group opacity={layer.opacity}>
-      {layer.type === 'image' ? <ImageContent layer={layer} /> : layer.type === 'paint' ? <PaintContent layer={layer} /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />}
+      {layer.type === 'image' ? <ImageContent layer={layer} preview={previewMask} /> : layer.type === 'paint' ? <PaintContent layer={layer} /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />}
     </Group>
     {selected && <Group>
-      <Rect x={0} y={0} width={layer.width} height={layer.height} color="#a78bfa" style="stroke" strokeWidth={Math.max(1, Math.min(layer.width, layer.height) / 180)} />
-      {[[0, 0], [layer.width, 0], [0, layer.height], [layer.width, layer.height]].map(([x, y], i) =>
-        <Rect key={i} x={x - 5} y={y - 5} width={10} height={10} color="#ffffff" />)}
+      <Rect x={0} y={0} width={layer.width} height={layer.height} color="#e9e9e9" style="stroke" strokeWidth={Math.max(1, Math.min(layer.width, layer.height) / 180)} />
+      {/* Side handles: stretch only one axis. */}
+      {[[layer.width/2,0],[layer.width,layer.height/2],[layer.width/2,layer.height],[0,layer.height/2]].map(([x,y],i) =>
+        <Circle key={`edge-${i}`} cx={x} cy={y} r={Math.max(5, Math.min(layer.width,layer.height)/45)} color="#ffffff" />)}
+      {/* Corners: delete, rotate, proportional resize. */}
+      {[[0,0],[layer.width,0],[layer.width,layer.height]].map(([x,y],i) =>
+        <Group key={`corner-${i}`}>
+          <Circle cx={x} cy={y} r={Math.max(10,Math.min(layer.width,layer.height)/24)} color="#ffffff" />
+          {i===0 ? <Path path={`M ${x-4} ${y-4} L ${x+4} ${y+4} M ${x+4} ${y-4} L ${x-4} ${y+4}`} color="#191919" style="stroke" strokeWidth={2} strokeCap="round" /> :
+           i===1 ? <Path path={`M ${x-5} ${y+2} C ${x-9} ${y-8}, ${x+7} ${y-9}, ${x+7} ${y+1} M ${x+3} ${y-2} L ${x+7} ${y+2} L ${x+10} ${y-3}`} color="#191919" style="stroke" strokeWidth={2} strokeCap="round" /> :
+           <Path path={`M ${x-5} ${y-5} L ${x+5} ${y+5} M ${x+1} ${y+5} L ${x+5} ${y+5} L ${x+5} ${y+1}`} color="#191919" style="stroke" strokeWidth={2} strokeCap="round" />}
+        </Group>)}
     </Group>}
   </Group>;
 }
@@ -72,10 +91,14 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   brushRef.current = brush;
   const pendingStroke = useRef<{ id: string; points: StrokePoint[] } | null>(null);
   const [previewStroke, setPreviewStroke] = useState<BrushStroke | null>(null);
+  const [previewMask, setPreviewMask] = useState<MaskStroke | null>(null);
+  const pendingMask = useRef<{ id: string; points: StrokePoint[] } | null>(null);
+  const appendMaskStroke = useEditorStore(s => s.appendMaskStroke);
   const appendStroke = useEditorStore(s => s.appendStroke);
-  const active = useRef<{ id: string | null; layer: EditorLayer | null; vp: Viewport; lastX: number; lastY: number; zoom: number; rotation: number; changed: boolean } | null>(null);
+  const active = useRef<{ id: string | null; layer: EditorLayer | null; vp: Viewport; lastX: number; lastY: number; zoom: number; rotation: number; changed: boolean; handle?: string; startPoint?: StrokePoint } | null>(null);
   const select = useEditorStore(s => s.select);
   const update = useEditorStore(s => s.update);
+  const remove = useEditorStore(s => s.remove);
   const beginEdit = useEditorStore(s => s.beginEdit);
   const finishEdit = useEditorStore(s => s.finishEdit);
   const fit = Math.min(size.width / document.width, size.height / document.height);
@@ -99,6 +122,16 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   const begin = (x: number, y: number) => {
     if (active.current) return;
     const d = toDoc(x, y);
+    if (modeRef.current === 'mask') {
+      const current = useEditorStore.getState().document;
+      const image = current?.layers.find(l => l.id === current.selectedId && l.type === 'image');
+      if (!image || image.type !== 'image') return;
+      const local = toLocal(d, image);
+      pendingMask.current = { id: image.id, points: [local] };
+      beginEdit();
+      setPreviewMask({ id: 'preview', points: [local], radius: brushRef.current.size, opacity: brushRef.current.opacity ?? 1, spread: brushRef.current.spread ?? 20, restore: !!brushRef.current.restore });
+      return;
+    }
     if (modeRef.current === 'brush') {
       const current = useEditorStore.getState().document;
       const paint = current?.layers.find(l => l.id === current.selectedId && l.type === 'paint');
@@ -110,12 +143,39 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       return;
     }
     const current = useEditorStore.getState().document;
-    const hit = modeRef.current === 'layer' && current ? hitTest(current.layers, d.x, d.y) : undefined;
+    const selected = current?.layers.find(l => l.id === current.selectedId);
+    let handle: string | undefined;
+    if (selected && modeRef.current === 'layer') {
+      const cx=selected.x+selected.width/2,cy=selected.y+selected.height/2;
+      const dx=d.x-cx,dy=d.y-cy,c=Math.cos(selected.rotation),sn=Math.sin(selected.rotation);
+      const lx=dx*c+dy*sn+selected.width/2,ly=-dx*sn+dy*c+selected.height/2;
+      const radius=22/Math.max(.15, vpRef.current.zoom * Math.min(sizeRef.current.width/document.width,sizeRef.current.height/document.height));
+      const handles:[string,number,number][]=[
+        ['delete',0,0],['rotate',selected.width,0],['uniform',selected.width,selected.height],
+        ['n',selected.width/2,0],['e',selected.width,selected.height/2],
+        ['s',selected.width/2,selected.height],['w',0,selected.height/2]
+      ];
+      handle=handles.find(([,hx,hy])=>Math.hypot(lx-hx,ly-hy)<radius)?.[0];
+    }
+    if (handle === 'delete' && selected) { remove(selected.id); return; }
+    const hit = handle ? selected : modeRef.current === 'layer' && current ? hitTest(current.layers, d.x, d.y) : undefined;
     if (modeRef.current === 'layer') select(hit?.id ?? null);
     if (hit) beginEdit();
-    active.current = { id: hit?.id ?? null, layer: hit ? { ...hit } : null, vp: { ...vpRef.current }, lastX: d.x, lastY: d.y, zoom: 1, rotation: 0, changed: false };
+    active.current = { id: hit?.id ?? null, layer: hit ? { ...hit } : null, vp: { ...vpRef.current }, lastX: d.x, lastY: d.y, zoom: 1, rotation: 0, changed: false, handle, startPoint:d };
   };
   const drawAt = (x: number, y: number) => {
+    const mask = pendingMask.current;
+    if (mask) {
+      const layer = useEditorStore.getState().document?.layers.find(l => l.id === mask.id);
+      if (!layer) return;
+      const p = toLocal(toDoc(x, y), layer);
+      const last = mask.points[mask.points.length - 1];
+      if (Math.hypot(p.x-last.x, p.y-last.y) < Math.max(1, brushRef.current.size * (brushRef.current.spread ?? 20) / 100)) return;
+      mask.points.push(p);
+      setPreviewMask({ id: 'preview', points: [...mask.points], radius: brushRef.current.size, opacity: brushRef.current.opacity ?? 1, spread: brushRef.current.spread ?? 20, restore: !!brushRef.current.restore });
+      return;
+    }
+
     const pending = pendingStroke.current;
     if (!pending) return;
     const layer = useEditorStore.getState().document?.layers.find(l => l.id === pending.id);
@@ -133,36 +193,49 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       const vp = a.vp, f = Math.min(sizeRef.current.width / document.width, sizeRef.current.height / document.height);
       const c = Math.cos(vp.rotation), s = Math.sin(vp.rotation);
       const x = (dx * c + dy * s) / (f * vp.zoom), y = (-dx * s + dy * c) / (f * vp.zoom);
-      update(a.id, { x: a.layer.x + x, y: a.layer.y + y });
+      if(a.handle){
+        const l=a.layer;
+        const c=Math.cos(l.rotation),sn=Math.sin(l.rotation);
+        const localX=x*c+y*sn, localY=-x*sn+y*c;
+        if(a.handle==='rotate'){
+          const start=a.startPoint!;
+          const cx=l.x+l.width/2,cy=l.y+l.height/2;
+          const angle=Math.atan2(start.y-cy,start.x-cx);
+          update(a.id,{rotation:l.rotation+Math.atan2(start.y+y-cy,start.x+x-cx)-angle});
+        } else if(a.handle==='uniform') {
+          // Uniform scale anchored at the opposite corner, even for rotated layers.
+          const projection=(localX*l.width+localY*l.height)/(l.width*l.width+l.height*l.height);
+          const factor=clamp(1+projection,.05,30);
+          const width=l.width*factor,height=l.height*factor;
+          const anchorX=l.x+l.width/2-(c*l.width/2-sn*l.height/2);
+          const anchorY=l.y+l.height/2-(sn*l.width/2+c*l.height/2);
+          update(a.id,{width,height,
+            x:anchorX+(c*width/2-sn*height/2)-width/2,
+            y:anchorY+(sn*width/2+c*height/2)-height/2});
+        } else {
+          // Edge handles stretch along their local perpendicular axis.
+          const left=a.handle==='w',right=a.handle==='e',top=a.handle==='n',bottom=a.handle==='s';
+          const dw=left?-localX:right?localX:0,dh=top?-localY:bottom?localY:0;
+          const w=Math.max(12,l.width+dw),h=Math.max(12,l.height+dh);
+          const shiftLocalX=left?(l.width-w)/2:right?(w-l.width)/2:0;
+          const shiftLocalY=top?(l.height-h)/2:bottom?(h-l.height)/2:0;
+          update(a.id,{width:w,height:h,
+            x:l.x+(l.width-w)/2+c*shiftLocalX-sn*shiftLocalY,
+            y:l.y+(l.height-h)/2+sn*shiftLocalX+c*shiftLocalY});
+        }
+      }else update(a.id, { x: a.layer.x + x, y: a.layer.y + y });
       a.changed = true;
-    }
-  };
-  const pinch = (scale: number) => {
-    const a = active.current;
-    if (!a) return;
-    a.zoom = scale;
-    if (modeRef.current === 'layer' && a.layer && a.id) {
-      const factor = clamp(scale, .1, 10);
-      const w = a.layer.width * factor, h = a.layer.height * factor;
-      update(a.id, { width: w, height: h, x: a.layer.x + (a.layer.width - w) / 2, y: a.layer.y + (a.layer.height - h) / 2 });
-      a.changed = true;
-    } else {
-      const next = { ...vpRef.current, zoom: clamp(a.vp.zoom * scale, .2, 12) };
-      vpRef.current = next; setViewport(next);
-    }
-  };
-  const rotate = (angle: number) => {
-    const a = active.current;
-    if (!a) return;
-    a.rotation = angle;
-    if (modeRef.current === 'layer' && a.layer && a.id) {
-      update(a.id, { rotation: a.layer.rotation + angle }); a.changed = true;
-    } else {
-      const next = { ...vpRef.current, rotation: a.vp.rotation + angle };
-      vpRef.current = next; setViewport(next);
     }
   };
   const end = () => {
+    if (pendingMask.current) {
+      const m = pendingMask.current;
+      appendMaskStroke(m.id, { id: `${Date.now()}-${Math.random()}`, points: m.points, radius: brushRef.current.size, opacity: brushRef.current.opacity ?? 1, spread: brushRef.current.spread ?? 20, restore: !!brushRef.current.restore });
+      pendingMask.current = null;
+      setPreviewMask(null);
+      finishEdit();
+    }
+
     const pending = pendingStroke.current;
     if (pending) {
       appendStroke(pending.id, { id: `${Date.now()}-${Math.random()}`, points: pending.points, ...brushRef.current });
@@ -193,9 +266,9 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     setViewport(next);
   };
   const gesture = useMemo(() => {
-    const oneFinger = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(mode === 'brush' ? 0 : 2)
+    const oneFinger = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(mode === 'brush' || mode === 'mask' ? 0 : 2)
       .onStart(e => begin(e.x - e.translationX, e.y - e.translationY))
-      .onUpdate(e => mode === 'brush' ? drawAt(e.x, e.y) : drag(e.translationX, e.translationY))
+      .onUpdate(e => mode === 'brush' || mode === 'mask' ? drawAt(e.x, e.y) : drag(e.translationX, e.translationY))
       .onFinalize(end);
     const twoFinger = Gesture.Pan().runOnJS(true).minPointers(2).averageTouches(true)
       .onStart(() => cameraStart())
@@ -215,7 +288,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
         <Group origin={{ x: size.width / 2, y: size.height / 2 }} transform={[{ translateX: viewport.x }, { translateY: viewport.y }, { scale: viewport.zoom }, { rotate: viewport.rotation }]}>
           <Group transform={[{ translateX: offsetX }, { translateY: offsetY }, { scale: fit }]}>
             <Rect x={0} y={0} width={document.width} height={document.height} color="#ffffff" />
-            {document.layers.map(layer => <React.Fragment key={layer.id}><LayerContent layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} />{mode === 'brush' && previewStroke && layer.id === document.selectedId && layer.type === 'paint' && <Group transform={[{ translateX: layer.x + layer.width/2 }, { translateY: layer.y + layer.height/2 }, { rotate: layer.rotation }, { translateX: -layer.width/2 }, { translateY: -layer.height/2 }]}><StrokeShape stroke={previewStroke} /></Group>}</React.Fragment>)}
+            {document.layers.map(layer => <React.Fragment key={layer.id}><LayerContent layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} previewMask={mode === 'mask' && layer.id === document.selectedId ? previewMask : null} />{mode === 'brush' && previewStroke && layer.id === document.selectedId && layer.type === 'paint' && <Group transform={[{ translateX: layer.x + layer.width/2 }, { translateY: layer.y + layer.height/2 }, { rotate: layer.rotation }, { translateX: -layer.width/2 }, { translateY: -layer.height/2 }]}><StrokeShape stroke={previewStroke} /></Group>}</React.Fragment>)}
           </Group>
         </Group>
       </Canvas>

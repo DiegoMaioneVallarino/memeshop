@@ -16,6 +16,7 @@ type State = {
   addShape: () => void;
   addPaint: () => void;
   appendStroke: (id: string, stroke: import('../types/editor').BrushStroke) => void;
+  appendMaskStroke: (id: string, stroke: import('../types/editor').MaskStroke) => void;
   select: (id: string | null) => void;
   update: (id: string, patch: Partial<EditorLayer>) => void;
   move: (id: string, direction: -1 | 1) => void;
@@ -71,6 +72,7 @@ export const useEditorStore = create<State>((set) => ({
     if (!s.document) return s;
     return { document: { ...s.document, layers: s.document.layers.map(l => l.id === id && l.type === 'paint' ? { ...l, strokes: [...l.strokes, stroke] } : l) } };
   }),
+  appendMaskStroke: (id: string, stroke: import('../types/editor').MaskStroke) => set(s => !s.document ? s : ({ document: { ...s.document, layers: s.document.layers.map(l => l.id === id && l.type === 'image' ? { ...l, maskStrokes: [...(l.maskStrokes ?? []), stroke] } : l) } })),
   select: (id) => set((s) => s.document ? { document: { ...s.document, selectedId: id } } : s),
   update: (id, patch) => set((s) => {
     if (!s.document) return s;
