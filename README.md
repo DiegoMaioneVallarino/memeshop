@@ -1,37 +1,36 @@
-# Photo Studio v0.2 — motor de capas
+# Photo Studio v0.3 — edición directa de capas
 
-Este ZIP contiene `App.tsx` y `src/` para reemplazar la v0.1 dentro del proyecto Expo blank-typescript.
+Actualización incremental sobre v0.2. Copia `App.tsx` y `src/` a tu proyecto Expo.
 
-## Instalación
+## Dependencias
 
 ```bash
-npx create-expo-app@latest photo-studio --template blank-typescript
-cd photo-studio
 npx expo install @shopify/react-native-skia react-native-gesture-handler react-native-reanimated react-native-worklets expo-image-picker expo-media-library expo-file-system expo-dev-client
 npm install zustand
 npx expo run:android
 ```
 
-Copia `App.tsx` y `src/` del ZIP a la raíz del proyecto. Si ya tienes v0.1, sustituye esos archivos.
+## Novedades
 
-## Funciones
+- Modo **Editar capa**: tocar para seleccionar la capa superior bajo el dedo, arrastrar para moverla, pellizcar para escalarla y gesto de rotación para girarla.
+- Modo **Mover vista**: pan, zoom y rotación del lienzo sin modificar las capas.
+- Marco de selección con esquinas visibles.
+- Hit testing de rectángulos rotados, respetando el orden y la visibilidad de las capas.
+- Coordenadas de gestos convertidas a unidades del documento incluso cuando la vista está ampliada o girada.
+- Deshacer/rehacer para las operaciones gestuales confirmadas (hasta 40 estados anteriores).
+- Se mantienen panel de capas, importación, formas, inspector y exportación de previsualización de v0.2.
 
-- Documento con dimensiones basadas en la primera imagen.
-- Capas de imagen y rectángulo con orden de apilamiento.
-- Seleccionar, ocultar, duplicar, eliminar y subir/bajar capas.
-- Posición, tamaño, rotación y opacidad independientes mediante botones del inspector.
-- Zoom, desplazamiento y rotación de la vista mediante gestos.
-- Exportación PNG de la vista del canvas a la galería.
+## Limitaciones conocidas
 
-## Limitaciones
+- Los gestos multitáctiles simultáneos de pellizco y rotación pueden competir entre sí; se recomienda hacerlos por separado.
+- El historial registra transformaciones gestuales, pero todavía no registra todas las operaciones del inspector, creación y eliminación de capas.
+- No se incluyen aún tiradores interactivos de escala/rotación, máscaras, pinceles ni guardado de proyectos.
+- La exportación sigue siendo una captura de la vista, no un render a resolución original.
+- No se ha compilado en dispositivos Android/iOS en este entorno. Las APIs exactas pueden variar según las versiones instaladas.
 
-- La exportación sigue siendo una captura de pantalla del canvas, no exportación de documento a resolución original.
-- Las transformaciones de capas se hacen desde el inspector; el canvas todavía no tiene manipulación directa por gestos de cada capa.
-- No hay historial de deshacer/rehacer, texto, máscaras ni persistencia de proyectos.
-- Los archivos importados se referencian por URI local; pueden dejar de estar disponibles después de limpiar la caché.
-- No se ejecutaron compilaciones Android/iOS aquí. Podrían requerirse ajustes según las versiones de Expo/Skia.
-- "Vista 1:1" restablece las transformaciones de vista a su ajuste inicial; no representa píxeles 1:1.
+## Commit
 
-## Commit sugerido
-
-`feat(editor): add layer stack and independent layer transforms`
+```bash
+git add .
+git commit -m "feat(editor): enable direct layer gestures and undo redo"
+```

@@ -3,7 +3,7 @@ import { ActivityIndicator, Alert, Pressable, SafeAreaView, StyleSheet, Text, Vi
 import * as ImagePicker from 'expo-image-picker';
 import * as MediaLibrary from 'expo-media-library';
 import * as FileSystem from 'expo-file-system/legacy';
-import { PhotoCanvas, type PhotoCanvasHandle } from '../components/editor/PhotoCanvas';
+import { PhotoCanvas, type PhotoCanvasHandle, type InteractionMode } from '../components/editor/PhotoCanvas';
 import { LayersPanel } from '../components/editor/LayersPanel';
 import { useEditorStore } from '../store/useEditorStore';
 function ToolButton({ label, onPress, disabled = false }: { label: string; onPress: () => void; disabled?: boolean }) {
@@ -16,6 +16,11 @@ export function EditorScreen() {
   const addShape = useEditorStore((s) => s.addShape);
   const canvas = useRef<PhotoCanvasHandle>(null);
   const [busy, setBusy] = useState(false);
+  const [mode, setMode] = useState<InteractionMode>('layer');
+  const undo = useEditorStore(s => s.undo);
+  const redo = useEditorStore(s => s.redo);
+  const canUndo = useEditorStore(s => s.past.length > 0);
+  const canRedo = useEditorStore(s => s.future.length > 0);
   async function importImage(replace = false) {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: false, quality: 1 });
@@ -42,16 +47,22 @@ export function EditorScreen() {
     finally { setBusy(false); }
   }
   return <SafeAreaView style={styles.screen}>
-    <View style={styles.header}><Text style={styles.brand}>PHOTO STUDIO <Text style={styles.version}>v0.2</Text></Text>
+    <View style={styles.header}><Text style={styles.brand}>PHOTO STUDIO <Text style={styles.version}>v0.3</Text></Text>
       <ToolButton label="Nuevo" onPress={() => importImage(true)} /></View>
-    <View style={styles.workspace}>{document ? <PhotoCanvas key={`${document.width}-${document.height}`} ref={canvas} document={document} /> :
+    <View style={styles.workspace}>{document ? <PhotoCanvas key={`${document.width}-${document.height}`} ref={canvas} document={document} mode={mode} /> :
       <View style={styles.empty}><Text style={styles.emptyTitle}>Tu lienzo te espera</Text><Text style={styles.hint}>Importa una imagen para comenzar.</Text><ToolButton label="Elegir imagen" onPress={() => importImage(true)} /></View>}</View>
+    {document && <View style={styles.modeRow}>
+      <ToolButton label={mode === 'layer' ? '✓ Editar capa' : 'Editar capa'} onPress={() => setMode('layer')} />
+      <ToolButton label={mode === 'view' ? '✓ Mover vista' : 'Mover vista'} onPress={() => setMode('view')} />
+      <ToolButton label="↶ Deshacer" onPress={undo} disabled={!canUndo} />
+      <ToolButton label="↷ Rehacer" onPress={redo} disabled={!canRedo} />
+    </View>}
     {document && <LayersPanel />}
     <View style={styles.footer}>
       <View style={styles.actions}><ToolButton label="+ Imagen" onPress={() => importImage(false)} disabled={!document || busy} /><ToolButton label="+ Forma" onPress={addShape} disabled={!document || busy} /><ToolButton label="Vista 1:1" onPress={() => canvas.current?.reset()} disabled={!document || busy} /><ToolButton label={busy ? 'Guardando...' : 'Exportar'} onPress={exportPreview} disabled={!document || busy} /></View>
-      <Text style={styles.hint}>Gestos sobre el canvas: desplazar, zoom y girar vista · Capas: controles inferiores</Text>
+      <Text style={styles.hint}>Editar capa: tocar, arrastrar, pellizcar y rotar · Mover vista: navegar el lienzo</Text>
       {busy && <ActivityIndicator color="#c6a6ff" />}
     </View>
   </SafeAreaView>;
 }
-const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#101116' }, header: { height: 58, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, brand: { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 1 }, version: { fontSize: 11, color: '#c6a6ff' }, workspace: { flex: 1, marginHorizontal: 8, borderRadius: 10, overflow: 'hidden', backgroundColor: '#17191f' }, empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 }, emptyTitle: { color: '#fff', fontSize: 22, fontWeight: '700' }, hint: { color: '#a6a7b3', fontSize: 11, textAlign: 'center' }, footer: { padding: 9, gap: 7, alignItems: 'center' }, actions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 5 }, button: { backgroundColor: '#30273f', paddingVertical: 10, paddingHorizontal: 11, borderRadius: 8 }, buttonText: { color: '#eee1ff', fontWeight: '700', fontSize: 12 }, disabled: { opacity: .4 } });
+const styles = StyleSheet.create({ screen: { flex: 1, backgroundColor: '#101116' }, header: { height: 58, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }, brand: { color: '#fff', fontSize: 16, fontWeight: '800', letterSpacing: 1 }, version: { fontSize: 11, color: '#c6a6ff' }, workspace: { flex: 1, marginHorizontal: 8, borderRadius: 10, overflow: 'hidden', backgroundColor: '#17191f' }, empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 16 }, emptyTitle: { color: '#fff', fontSize: 22, fontWeight: '700' }, hint: { color: '#a6a7b3', fontSize: 11, textAlign: 'center' }, modeRow: { flexDirection: 'row', justifyContent: 'center', flexWrap: 'wrap', gap: 5, paddingVertical: 5 }, footer: { padding: 9, gap: 7, alignItems: 'center' }, actions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 5 }, button: { backgroundColor: '#30273f', paddingVertical: 10, paddingHorizontal: 11, borderRadius: 8 }, buttonText: { color: '#eee1ff', fontWeight: '700', fontSize: 12 }, disabled: { opacity: .4 } });

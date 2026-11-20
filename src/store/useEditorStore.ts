@@ -4,6 +4,13 @@ const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 type State = {
   document: EditorDocument | null;
+  past: EditorDocument[];
+  future: EditorDocument[];
+  editBaseline: EditorDocument | null;
+  beginEdit: () => void;
+  finishEdit: () => void;
+  undo: () => void;
+  redo: () => void;
   setPhoto: (asset: PhotoAsset) => void;
   addImage: (asset: PhotoAsset) => void;
   addShape: () => void;
@@ -23,9 +30,25 @@ const imageLayer = (asset: PhotoAsset, docWidth: number, docHeight: number): Edi
 };
 export const useEditorStore = create<State>((set) => ({
   document: null,
-  setPhoto: (asset) => set(() => { const layer = imageLayer(asset, asset.width, asset.height); return { document: { width: asset.width, height: asset.height, layers: [layer], selectedId: layer.id } }; }),
+  past: [], future: [], editBaseline: null,
+  beginEdit: () => set(s => s.document && !s.editBaseline ? { editBaseline: structuredClone(s.document) } : s),
+  finishEdit: () => set(s => {
+    if (!s.editBaseline) return s;
+    const changed = JSON.stringify(s.editBaseline) !== JSON.stringify(s.document);
+    return { editBaseline: null, past: changed ? [...s.past.slice(-39), s.editBaseline] : s.past, future: changed ? [] : s.future };
+  }),
+  undo: () => set(s => {
+    if (!s.document || !s.past.length) return s;
+    const previous = s.past[s.past.length - 1];
+    return { document: previous, past: s.past.slice(0, -1), future: [s.document, ...s.future], editBaseline: null };
+  }),
+  redo: () => set(s => {
+    if (!s.document || !s.future.length) return s;
+    return { document: s.future[0], past: [...s.past, s.document], future: s.future.slice(1), editBaseline: null };
+  }),
+  setPhoto: (asset) => set(() => { const layer = imageLayer(asset, asset.width, asset.height); return { document: { width: asset.width, height: asset.height, layers: [layer], selectedId: layer.id }, past: [], future: [], editBaseline: null }; }),
   addImage: (asset) => set((s) => {
-    if (!s.document) { const layer = imageLayer(asset, asset.width, asset.height); return { document: { width: asset.width, height: asset.height, layers: [layer], selectedId: layer.id } }; }
+    if (!s.document) { const layer = imageLayer(asset, asset.width, asset.height); return { document: { width: asset.width, height: asset.height, layers: [layer], selectedId: layer.id }, past: [], future: [], editBaseline: null }; }
     const layer = imageLayer(asset, s.document.width, s.document.height);
     return { document: { ...s.document, layers: [...s.document.layers, layer], selectedId: layer.id } };
   }),
@@ -67,5 +90,5 @@ export const useEditorStore = create<State>((set) => ({
     const layers = s.document.layers.filter((l) => l.id !== id);
     return { document: { ...s.document, layers, selectedId: s.document.selectedId === id ? layers[layers.length - 1]?.id ?? null : s.document.selectedId } };
   }),
-  resetDocument: () => set({ document: null }),
+  resetDocument: () => set({ document: null, past: [], future: [], editBaseline: null }),
 }));
