@@ -48,6 +48,7 @@ export function EditorScreen() {
   const wandLayerRef=useRef<string|null>(null);
   const wandSettingsRef=useRef({tolerance:25,feather:12,contiguous:true});
   const [filterCategory,setFilterCategory]=useState('TODOS');
+  const [textTab,setTextTab]=useState<'Fuente'|'Trazo'|'Color'|'Resaltador'|'Sombra'>('Fuente');
   const [filterPreset,setFilterPreset]=useState('Ninguno');
   const [replacementSource,setReplacementSource]=useState('#18e500');
   const [replacementTarget,setReplacementTarget]=useState('#ff304f');
@@ -327,14 +328,41 @@ export function EditorScreen() {
         </> : <>
           <View style={styles.row}><Text style={styles.field}>Contenido</Text><MiniButton label="+ Otro texto" onPress={addText}/></View>
           <TextInput multiline value={selected.text} onChangeText={v=>update(selected.id,{text:v,name:v.split('\n')[0].slice(0,28)||'Texto'} as any)} placeholder="Escribe tu texto" placeholderTextColor="#777" style={styles.textInput}/>
-          <Text style={styles.field}>Tamaño · {Math.round(selected.fontSize)} px</Text>
-          <Slider minimumValue={Math.max(8,document.width*.012)} maximumValue={Math.max(32,document.width*.24)} step={1} value={selected.fontSize} onValueChange={v=>update(selected.id,{fontSize:v,height:Math.max(1,selected.text.split('\n').length*v*selected.lineHeight)} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
-          <Text style={styles.field}>Color</Text>
-          <View style={styles.row}>{['#ffffff','#000000','#18e500','#ff304f','#25c5ff','#ffe05a','#ff8800','#fa8fff'].map(c=><Pressable key={c} accessibilityLabel={`Color ${c}`} onPress={()=>update(selected.id,{color:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.color===c?'#18e500':'#666',borderWidth:selected.color===c?3:1}]}/>)}</View>
-          <Text style={styles.field}>Alineación</Text>
-          <View style={styles.row}>{(['left','center','right'] as const).map(a=><Pressable key={a} onPress={()=>update(selected.id,{align:a} as any)} style={[styles.mini,selected.align===a&&{backgroundColor:'#19672b'}]}><Text style={styles.miniText}>{a==='left'?'Izquierda':a==='center'?'Centro':'Derecha'}</Text></Pressable>)}</View>
-          <Text style={styles.field}>Interlineado · {selected.lineHeight.toFixed(2)}</Text>
-          <Slider minimumValue={0.8} maximumValue={2} step={0.05} value={selected.lineHeight} onValueChange={v=>update(selected.id,{lineHeight:v,height:Math.max(1,selected.text.split('\n').length*selected.fontSize*v)} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:8,paddingVertical:6}}>
+            {(['Fuente','Trazo','Color','Resaltador','Sombra'] as const).map((tab)=><Pressable key={tab} onPress={()=>setTextTab(tab)} style={{paddingHorizontal:13,paddingVertical:10,borderRadius:18,backgroundColor:textTab===tab?'#18e500':'#282828'}}><Text style={{color:textTab===tab?'#061b09':'#eee',fontWeight:'700'}}>{tab}</Text></Pressable>)}
+          </ScrollView>
+          {textTab==='Fuente' && <>
+            <Text style={styles.field}>Tipografía</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:9}}>
+              {['System','Arial','Helvetica','Georgia','Courier','Times','Impact'].map(f=><Pressable key={f} onPress={()=>update(selected.id,{fontFamily:f} as any)} style={{minWidth:104,padding:12,backgroundColor:(selected.fontFamily??'System')===f?'#185c2a':'#282828',borderRadius:10,borderWidth:1,borderColor:(selected.fontFamily??'System')===f?'#18e500':'#444'}}><Text style={{fontFamily:f==='System'?undefined:f==='Times'?'Times New Roman':f==='Courier'?'Courier New':f,fontSize:18,color:'white',textAlign:'center'}} numberOfLines={1}>{f}</Text></Pressable>)}
+            </ScrollView>
+            <Text style={styles.field}>Tamaño · {Math.round(selected.fontSize)} px</Text>
+            <Slider minimumValue={Math.max(8,document.width*.012)} maximumValue={Math.max(32,document.width*.24)} step={1} value={selected.fontSize} onValueChange={v=>update(selected.id,{fontSize:v,height:Math.max(1,selected.text.split('\n').length*v*selected.lineHeight)} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
+            <Text style={styles.field}>Alineación</Text>
+            <View style={styles.row}>{(['left','center','right'] as const).map(a=><Pressable key={a} onPress={()=>update(selected.id,{align:a} as any)} style={[styles.mini,selected.align===a&&{backgroundColor:'#19672b'}]}><Text style={styles.miniText}>{a==='left'?'Izquierda':a==='center'?'Centro':'Derecha'}</Text></Pressable>)}</View>
+            <Text style={styles.field}>Interlineado · {selected.lineHeight.toFixed(2)}</Text>
+            <Slider minimumValue={0.8} maximumValue={2} step={0.05} value={selected.lineHeight} onValueChange={v=>update(selected.id,{lineHeight:v,height:Math.max(1,selected.text.split('\n').length*selected.fontSize*v)} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
+          </>}
+          {textTab==='Trazo' && <>
+            <Text style={styles.field}>Grosor del contorno · {Math.round(selected.strokeWidth??0)} px</Text>
+            <Slider minimumValue={0} maximumValue={Math.max(10,selected.fontSize*.2)} step={1} value={selected.strokeWidth??0} onValueChange={v=>update(selected.id,{strokeWidth:v} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
+            <Text style={styles.field}>Color del trazo</Text>
+            <View style={styles.row}>{['#000000','#ffffff','#18e500','#ff304f','#25c5ff','#ffe05a'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{strokeColor:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.strokeColor===c?'#18e500':'#666',borderWidth:3}]}/>)}</View>
+          </>}
+          {textTab==='Color' && <>
+            <Text style={styles.field}>Color del texto</Text>
+            <View style={styles.row}>{['#ffffff','#000000','#18e500','#ff304f','#25c5ff','#ffe05a','#ff8800','#fa8fff'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{color:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.color===c?'#18e500':'#666',borderWidth:3}]}/>)}</View>
+          </>}
+          {textTab==='Resaltador' && <>
+            <MiniButton label="Sin resaltado" onPress={()=>update(selected.id,{highlightColor:null} as any)}/>
+            <View style={styles.row}>{['#ffe05a','#18e500','#25c5ff','#ff304f','#ffffff'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{highlightColor:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.highlightColor===c?'#18e500':'#666',borderWidth:3}]}/>)}</View>
+          </>}
+          {textTab==='Sombra' && <>
+            <Text style={styles.field}>Distancia de sombra · {Math.round(selected.shadowBlur??0)} px</Text>
+            <Slider minimumValue={0} maximumValue={Math.max(12,selected.fontSize*.3)} step={1} value={selected.shadowBlur??0} onValueChange={v=>update(selected.id,{shadowBlur:v} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
+            <Text style={styles.field}>Color de sombra</Text>
+            <View style={styles.row}>{['#000000','#ffffff','#18e500','#ff304f','#25c5ff'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{shadowColor:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.shadowColor===c?'#18e500':'#666',borderWidth:3}]}/>)}</View>
+          </>}
           <Text style={styles.help}>Para mover o redimensionar el texto, aplica los cambios y selecciona la capa en el lienzo.</Text>
         </>}
       </View>}

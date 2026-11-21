@@ -1,6 +1,6 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, Text } from 'react-native';
-import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Text as SkiaText } from '@shopify/react-native-skia';
+import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Text as SkiaText, matchFont } from '@shopify/react-native-skia';
 import type { SkImage } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer } from '../../types/editor';
@@ -281,17 +281,31 @@ function CropOverlay({ width, height, rect }: { width: number; height: number; r
 }
 // Render text with the same Skia scene used by the interactive canvas and PNG export.
 // Font size is expressed in document pixels; resizing the layer scales glyphs proportionally.
+const TEXT_FONT_FAMILIES: Record<string, string> = {
+  System: 'System', Arial: 'Arial', Helvetica: 'Helvetica', Georgia: 'Georgia',
+  Courier: 'Courier New', Times: 'Times New Roman', Impact: 'Impact',
+};
 function TextContent({ layer }: { layer: TextLayer }) {
   const lines = layer.text.split('\n');
   const lineHeight = layer.fontSize * layer.lineHeight;
   const naturalHeight = Math.max(lineHeight, lines.length * lineHeight);
   const scaleY = layer.height / naturalHeight;
-  const font = useMemo(() => Skia.Font(Skia.Typeface.MakeDefault(), Math.max(1, layer.fontSize)), [layer.fontSize]);
+  // Typeface.MakeDefault is absent in react-native-skia 2.14; matchFont is supported on native.
+  const font = matchFont({fontFamily: TEXT_FONT_FAMILIES[layer.fontFamily ?? 'System'] ?? 'System', fontSize: Math.max(1, layer.fontSize)});
+  const outline = Math.max(0, layer.strokeWidth ?? 0);
+  const shadow = Math.max(0, layer.shadowBlur ?? 0);
   return <Group transform={[{ scaleY }]}>
     {lines.map((line, i) => {
-      const measured = font.measureText(line).width;
+      const content = line || ' ';
+      const measured = font.measureText(content).width;
       const x = layer.align === 'center' ? (layer.width - measured) / 2 : layer.align === 'right' ? layer.width - measured : 0;
-      return <SkiaText key={i} text={line || ' '} x={x} y={(i + 0.85) * lineHeight} font={font} color={layer.color} />;
+      const y = (i + 0.85) * lineHeight;
+      return <Group key={i}>
+        {shadow > 0 && <SkiaText text={content} x={x + shadow * .65} y={y + shadow * .65} font={font} color={layer.shadowColor ?? '#000000'} />}
+        {outline > 0 && <SkiaText text={content} x={x} y={y} font={font} color={layer.strokeColor ?? '#000000'} style="stroke" strokeWidth={outline * 2} strokeJoin="round" />}
+        {layer.highlightColor && <Rect x={x-3} y={y-layer.fontSize} width={measured+6} height={lineHeight} color={layer.highlightColor} opacity={0.5} />}
+        <SkiaText text={content} x={x} y={y} font={font} color={layer.color} />
+      </Group>;
     })}
   </Group>;
 }

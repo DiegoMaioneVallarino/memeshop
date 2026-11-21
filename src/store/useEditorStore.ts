@@ -118,7 +118,7 @@ export const useEditorStore = create<State>((set) => ({
     const { width, height } = s.document;
     const fontSize = Math.max(14, Math.round(Math.min(width, height) * 0.085));
     const w = width * 0.82;
-    const layer: EditorLayer = { id: makeId(), type: 'text', name: 'Texto', text: 'Tu texto aquí', color: '#ffffff', fontSize, align: 'center', lineHeight: 1.2, x: (width-w)/2, y: height * 0.42, width: w, height: fontSize * 1.5, rotation: 0, opacity: 1, visible: true };
+    const layer: EditorLayer = { id: makeId(), type: 'text', name: 'Texto', text: 'Tu texto aquí', color: '#ffffff', fontSize, fontFamily: 'System', strokeWidth: 0, strokeColor: '#000000', shadowBlur: 0, shadowColor: '#000000', highlightColor: null, align: 'center', lineHeight: 1.2, x: (width-w)/2, y: height * 0.42, width: w, height: fontSize * 1.5, rotation: 0, opacity: 1, visible: true };
     return commit(s, { ...s.document, layers: [...s.document.layers, layer], selectedId: layer.id });
   }),
   appendStroke: (id, stroke) => set(s => {
