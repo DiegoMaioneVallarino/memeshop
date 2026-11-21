@@ -23,18 +23,104 @@ function adjustmentMatrix(brightness: number, contrast: number, saturation: numb
 const glitchEffect = Skia.RuntimeEffect.Make(`
  uniform shader source;
  uniform float2 dimensions;
+ uniform float mode;
  uniform float intensity;
+ uniform float density;
+ uniform float seed;
+ float hash(float n) { return fract(sin(n * 127.1 + seed * 17.17) * 43758.5453); }
+ float2 bounded(float2 p) { return clamp(p, float2(0.5), dimensions - float2(0.5)); }
+ half4 sampleAt(float2 p) { return source.eval(bounded(p)); }
+ float luminance(half4 c) { return dot(float3(c.rgb), float3(0.2126, 0.7152, 0.0722)); }
  half4 main(float2 xy) {
-   float row = floor(xy.y / 9.0);
-   float noise = fract(sin(row * 127.1) * 43758.5453);
-   float shift = (noise > 0.76 ? (noise - 0.76) * 36.0 : 0.0) * intensity;
-   float stripe = step(0.92, fract(xy.y / 3.0)) * 0.13 * intensity;
-   float2 left = clamp(xy + float2(-3.5 * intensity + shift, 0.0), float2(0), dimensions - 1.0);
-   float2 right = clamp(xy + float2(3.5 * intensity + shift, 0.0), float2(0), dimensions - 1.0);
-   half4 center = source.eval(clamp(xy + float2(shift, 0), float2(0), dimensions - 1.0));
-   half4 r = source.eval(left);
-   half4 b = source.eval(right);
-   return half4(r.r, center.g, b.b, center.a) * (1.0 - stripe);
+   float strength = intensity;
+   float amount = max(0.01, density);
+   float2 uv = xy;
+   float band = floor(xy.y / max(2.0, 28.0 - amount * 22.0));
+   float rnd = hash(band);
+   half4 original = sampleAt(xy);
+   if (mode < 0.5) return original;
+   // 1: slice repeat: duplicate source rows and displace torn strips.
+   if (mode < 1.5) {
+     float period = max(4.0, 48.0 - amount * 37.0);
+     float stripe = floor(xy.y / period);
+     float active = step(1.0 - amount * 0.8, hash(stripe));
+     uv.y = mix(xy.y, stripe * period + mod(xy.y, max(2.0, period * 0.28)), active);
+     uv.x += active * (hash(stripe + 23.0) - 0.5) * 110.0 * strength;
+   }
+   // 2: displacement by stable rectangular sectors.
+   else if (mode < 2.5) {
+     float2 cell = floor(xy / max(8.0, 90.0 - amount * 74.0));
+     float n = hash(cell.x * 37.0 + cell.y * 113.0);
+     if (n < amount) uv += (float2(hash(n * 39.0), hash(n * 97.0)) - 0.5) * 100.0 * strength;
+   }
+   // 3: independent channel displacement (regional RGB split).
+   else if (mode < 3.5) {
+     float region = step(1.0 - amount, rnd);
+     float offset = (2.0 + strength * 24.0) * region;
+     half4 red = sampleAt(xy + float2(offset, -offset * 0.2));
+     half4 blue = sampleAt(xy - float2(offset, -offset * 0.2));
+     return half4(red.r, original.g, blue.b, original.a);
+   }
+   // 4: bounded GPU neighborhood brightness sort approximation (7 samples).
+   else if (mode < 4.5) {
+     float lengthPx = 2.0 + strength * 28.0;
+     half4 candidate = original;
+     float best = luminance(original);
+     for (int i = 1; i < 8; i++) {
+       half4 c = sampleAt(xy + float2(float(i) * lengthPx / 7.0, 0.0));
+       float l = luminance(c);
+       if (l > best) { best = l; candidate = c; }
+     }
+     return mix(original, candidate, half(amount));
+   }
+   // 5: analog VHS tracking, wave jitter, dropout scanlines.
+   else if (mode < 5.5) {
+     float wave = sin(xy.y * 0.11 + seed) * 3.0 + sin(xy.y * 0.033 + seed * 0.7) * 7.0;
+     uv.x += wave * strength + step(1.0 - amount * 0.35, rnd) * (rnd - 0.5) * 75.0 * strength;
+     half4 c = sampleAt(uv);
+     float scan = 1.0 - 0.17 * strength * step(0.65, fract(xy.y * 0.5));
+     float grain = (hash(floor(xy.x * 0.8) + floor(xy.y) * 31.0) - 0.5) * 0.13 * strength;
+     return half4(clamp(float3(c.rgb) * scan + grain, float3(0), float3(1)), c.a);
+   }
+   // 6: simulated compression blocks and blocky color quantization.
+   else if (mode < 6.5) {
+     float blockSize = 3.0 + amount * 28.0;
+     float2 block = floor(xy / blockSize);
+     float2 offset = (float2(hash(block.x + block.y * 31.0), hash(block.x * 19.0 + block.y)) - 0.5) * strength * 14.0;
+     half4 c = sampleAt((block + 0.5) * blockSize + offset);
+     float levels = max(2.0, 32.0 - strength * 26.0);
+     return half4(floor(float3(c.rgb) * levels + 0.5) / levels, c.a);
+   }
+   // 7: static datamosh-like directional smear, not real video motion vectors.
+   else if (mode < 7.5) {
+     float blockSize = max(6.0, 48.0 - amount * 35.0);
+     float2 cell = floor(xy / blockSize);
+     float n = hash(cell.y * 41.0 + cell.x * 17.0);
+     float2 offset = float2((n - 0.5) * 150.0 * strength, (hash(n * 37.0) - 0.5) * 35.0 * strength);
+     half4 c = sampleAt(xy - offset);
+     return mix(original, c, half(step(1.0 - amount, n) * 0.85));
+   }
+   // 8: dropout lines and replacement blocks.
+   else if (mode < 8.5) {
+     float cell = floor(xy.y / max(2.0, 20.0 - amount * 17.0));
+     float n = hash(cell);
+     if (n < amount * strength * 0.7) {
+       if (hash(cell + 41.0) > 0.5) return half4(0.0, 0.0, 0.0, original.a);
+       uv.y = max(0.0, xy.y - 20.0 - hash(cell + 9.0) * 90.0);
+     }
+   }
+   // 9: bit depth reduction with stable ordered-like noise.
+   else if (mode < 9.5) {
+     float levels = max(2.0, 64.0 - strength * 60.0);
+     float dither = (hash(floor(xy.x) + floor(xy.y) * 8192.0) - 0.5) * amount / levels;
+     return half4(clamp(floor((float3(original.rgb) + dither) * levels + 0.5) / levels, float3(0), float3(1)), original.a);
+   }
+   // 10: interlaced field offset.
+   else {
+     float line = floor(xy.y / max(1.0, 5.0 - amount * 4.0));
+     uv.x += (mod(line, 2.0) * 2.0 - 1.0) * strength * 30.0;
+   }
+   return sampleAt(uv);
  }
 `);
 // Global color-key preview runs in the GPU fragment shader. Contiguous flood-fill
@@ -102,10 +188,10 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
   // Group layer. An offscreen layer with a nested Paint was rendering black on iOS.
   const adj = layer.adjustments;
   const hasAdjustments = !!adj && (Math.abs(adj.brightness ?? 0) > 0.0001 || Math.abs(adj.contrast ?? 0) > 0.0001 || Math.abs(adj.saturation ?? 0) > 0.0001);
-  const glitch = layer.glitch ?? 0;
-  const content = glitch > 0 && glitchEffect ? (
+  const glitch = layer.glitchSettings ?? (layer.glitch ? { mode: 3, intensity: layer.glitch, density: 0.65, seed: 1337 } : null);
+  const content = glitch && glitch.mode > 0 && glitchEffect ? (
     <Rect x={0} y={0} width={layer.width} height={layer.height}>
-      <Shader source={glitchEffect} uniforms={{dimensions:[layer.width,layer.height],intensity:glitch}}>
+      <Shader source={glitchEffect} uniforms={{dimensions:[layer.width,layer.height],mode:glitch.mode,intensity:glitch.intensity,density:glitch.density,seed:glitch.seed}}>
         <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
       </Shader>
     </Rect>
