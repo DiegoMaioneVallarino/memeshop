@@ -279,7 +279,7 @@ export function EditorScreen() {
       const g=croppedGeometry(l,frac,angle);
       // La máscara de la varita/quitafondos cubre toda la imagen: se recorta con la misma transformación para que no se desalinee.
       let magicMaskUri=l.magicMaskUri;
-      if(magicMaskUri){const m=await loadMaskImage(magicMaskUri);if(m)magicMaskUri=registerMask(cropMaskImage(m,l.width,l.height,frac,angle));}
+      if(magicMaskUri){const m=await loadMaskImage(magicMaskUri);if(m)magicMaskUri=registerMask(await cropMaskImage(m,l.width,l.height,frac,angle));}
       update(l.id,{uri,sourceWidth:outW,sourceHeight:outH,x:g.x,y:g.y,width:g.width,height:g.height,maskStrokes:g.maskStrokes,magicMaskUri} as any);
       // The previous file is not deleted here: undo still needs it. pruneAssets() removes it once the project is closed.
       setTool(null);setCrop(initialCrop);

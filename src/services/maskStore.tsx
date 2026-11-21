@@ -72,7 +72,7 @@ export async function materializeMasks(doc: EditorDocument): Promise<EditorDocum
       const img = masks.get(l.magicMaskUri);
       if (!img) { layers.push({ ...l, magicMaskUri: undefined }); changed = true; continue; }
       // Se redibuja a RGBA (alfa conservado) para que el PNG recargado conserve el canal alfa sí o sí.
-      const rgba = drawAsImage(<SkiaImage image={img} x={0} y={0} width={img.width()} height={img.height()} fit="fill" />,
+      const rgba = await drawAsImage(<SkiaImage image={img} x={0} y={0} width={img.width()} height={img.height()} fit="fill" />,
         { width: img.width(), height: img.height() });
       const dir = FileSystem.documentDirectory + ASSETS_DIR;
       await FileSystem.makeDirectoryAsync(dir, { intermediates: true });

@@ -21,7 +21,7 @@ export async function cropAndStraighten(uri: string, displayW: number, displayH:
   ]}>
     <SkiaImage image={img} x={0} y={0} width={displayW} height={displayH} fit="fill" />
   </Group>;
-  const out = drawAsImage(scene, { width: outW, height: outH });
+  const out = await drawAsImage(scene, { width: outW, height: outH });
   const base64 = out.encodeToBase64();
   if (!FileSystem.cacheDirectory) throw new Error('No se encontró el directorio temporal.');
   const file = `${FileSystem.cacheDirectory}crop-${Date.now()}.png`;
@@ -34,7 +34,7 @@ export async function cropAndStraighten(uri: string, displayW: number, displayH:
  * La máscara cubre toda la imagen (es independiente de su resolución), así que se recorta a su propia resolución.
  * Devuelve un SkImage con el alfa de la máscara; las esquinas vacías tras enderezar quedan en 0 (quitadas), igual que la imagen.
  */
-export function cropMaskImage(mask: SkImage, displayW: number, displayH: number, frac: Rect, angle: number): SkImage {
+export async function cropMaskImage(mask: SkImage, displayW: number, displayH: number, frac: Rect, angle: number): Promise<SkImage> {
   const outW = Math.max(1, Math.round(mask.width() * frac.w)), outH = Math.max(1, Math.round(mask.height() * frac.h));
   const kx = outW / (frac.w * displayW), ky = outH / (frac.h * displayH);
   const scene = <Group transform={[
@@ -44,5 +44,5 @@ export function cropMaskImage(mask: SkImage, displayW: number, displayH: number,
   ]}>
     <SkiaImage image={mask} x={0} y={0} width={displayW} height={displayH} fit="fill" />
   </Group>;
-  return drawAsImage(scene, { width: outW, height: outH });
+  return await drawAsImage(scene, { width: outW, height: outH });
 }

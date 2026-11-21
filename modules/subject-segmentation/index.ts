@@ -1,4 +1,4 @@
-import { requireOptionalNativeModule } from 'expo-modules-core';
+import * as ExpoCore from 'expo-modules-core';
 
 /** Máscara A8 cruda (w*h bytes, 255 = sujeto) en base64. Ya viene orientada como la imagen. */
 export type SegmentResult = { width: number; height: number; data: string };
@@ -7,7 +7,14 @@ type Native = {
   segment(uri: string, maxSide: number, tapX: number, tapY: number): Promise<SegmentResult>;
 };
 // Opcional: en Expo Go, simulador sin Vision o builds sin el módulo, queda null y la app usa el respaldo por color.
-const native = requireOptionalNativeModule<Native>('SubjectSegmentation');
+const native: Native | null = (() => {
+  try {
+    const core: any = ExpoCore;
+    if (typeof core.requireOptionalNativeModule === 'function') return core.requireOptionalNativeModule('SubjectSegmentation') as Native | null;
+    if (typeof core.requireNativeModule === 'function') return core.requireNativeModule('SubjectSegmentation') as Native; // lanza si no está enlazado
+  } catch { /* módulo no enlazado: se usa el respaldo por color */ }
+  return null;
+})();
 
 export class NoSubjectError extends Error { constructor() { super('No se detectó ningún sujeto en la imagen.'); } }
 

@@ -337,7 +337,7 @@ async function renderDocumentBase64(doc: EditorDocument): Promise<string> {
     if(l.magicMaskUri){const mask=await loadMaskImage(l.magicMaskUri);if(mask)images[`${l.id}:mask`]=mask;}
   }
   const scale = Math.min(1, MAX_EXPORT_SIDE / Math.max(doc.width, doc.height));
-  const out = drawAsImage(<ExportScene doc={doc} images={images} scale={scale} />, { width: Math.max(1, Math.round(doc.width * scale)), height: Math.max(1, Math.round(doc.height * scale)) });
+  const out = await drawAsImage(<ExportScene doc={doc} images={images} scale={scale} />, { width: Math.max(1, Math.round(doc.width * scale)), height: Math.max(1, Math.round(doc.height * scale)) });
   return out.encodeToBase64();
 }
 /** Exports a single masked image as an actual transparent PNG for the sticker library. */
@@ -356,7 +356,7 @@ export async function renderStickerBase64(layer: ImageLayer): Promise<{ base64: 
     images[`${layer.id}:mask`]=mask;
   }
   const scale = Math.min(1, MAX_EXPORT_SIDE / Math.max(width, height));
-  const result = drawAsImage(<ExportScene doc={doc} images={images} scale={scale} transparent />, {
+  const result = await drawAsImage(<ExportScene doc={doc} images={images} scale={scale} transparent />, {
     width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale))
   });
   return { base64: result.encodeToBase64(), width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
