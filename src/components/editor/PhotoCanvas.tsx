@@ -55,8 +55,9 @@ function PaintContent({ layer, preview }: { layer: PaintLayer; preview?: BrushSt
 function MaskPath({ stroke }: { stroke: MaskStroke }) {
   return <BrushPath points={stroke.points} width={stroke.radius * 2} color={stroke.restore ? '#ffffff' : '#000000'} opacity={stroke.opacity} softness={softnessOf(stroke.spread, stroke.hardness)} />;
 }
-function ImageContent({ layer, preview, preloaded }: { layer: ImageLayer; preview?: MaskStroke | null; preloaded?: SkImage }) {
-  const wandMask = useImage(layer.magicMaskUri ?? null);
+function ImageContent({ layer, preview, preloaded, preloadedMask }: { layer: ImageLayer; preview?: MaskStroke | null; preloaded?: SkImage; preloadedMask?: SkImage }) {
+  const wandMaskLoaded = useImage(layer.magicMaskUri ?? null);
+  const wandMask = preloadedMask ?? wandMaskLoaded;
   const loaded = useImage(preloaded ? null : layer.uri);
   const image = preloaded ?? loaded;
   if (!image) return null;
@@ -123,7 +124,7 @@ function LayerContent({ layer, selected, previewMask, previewStroke, images, cro
       <Group transform={flipX ? [{ translateX: layer.width / 2 }, { scaleX: -1 }, { translateX: -layer.width / 2 }] : undefined}>
         {layer.type === 'image' ? (() => {
           const crop = cropPreview && cropPreview.layerId === layer.id ? cropPreview : null;
-          let body = <ImageContent layer={layer} preview={previewMask} preloaded={images?.[layer.id]} />;
+          let body = <ImageContent layer={layer} preview={previewMask} preloaded={images?.[layer.id]} preloadedMask={images?.[`${layer.id}:mask`]} />;
           // Straighten preview: the image turns under the fixed crop rectangle.
           if (crop && crop.angle) body = <Group transform={[{ translateX: layer.width / 2 }, { translateY: layer.height / 2 }, { rotate: crop.angle }, { translateX: -layer.width / 2 }, { translateY: -layer.height / 2 }]}>{body}</Group>;
           const projected = (layer.perspectiveX || layer.perspectiveY) ? <Group matrix={perspectiveMatrix(layer.width,layer.height,layer.perspectiveX??0,layer.perspectiveY??0)}>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</Group> : <>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</>;
@@ -149,10 +150,10 @@ function LayerContent({ layer, selected, previewMask, previewStroke, images, cro
 }
 // Offscreen scene for export: document coordinates only (no viewport, no selection handles), clipped to the document.
 const MAX_EXPORT_SIDE = 4096;
-function ExportScene({ doc, images, scale }: { doc: EditorDocument; images: Record<string, SkImage>; scale: number }) {
+function ExportScene({ doc, images, scale, transparent = false }: { doc: EditorDocument; images: Record<string, SkImage>; scale: number; transparent?: boolean }) {
   return <Group transform={[{ scale }]}>
     <Group clip={{ x: 0, y: 0, width: doc.width, height: doc.height }}>
-      <Rect x={0} y={0} width={doc.width} height={doc.height} color="#ffffff" />
+      {!transparent && <Rect x={0} y={0} width={doc.width} height={doc.height} color="#ffffff" />}
       {doc.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={false} images={images} />)}
     </Group>
   </Group>;
@@ -165,10 +166,33 @@ async function renderDocumentBase64(doc: EditorDocument): Promise<string> {
     const img = Skia.Image.MakeImageFromEncoded(data);
     if (!img) throw new Error(`No se pudo decodificar la imagen de la capa "${l.name}".`);
     images[l.id] = img;
+    if(l.magicMaskUri){const maskData=await Skia.Data.fromURI(l.magicMaskUri);const mask=Skia.Image.MakeImageFromEncoded(maskData);if(mask)images[`${l.id}:mask`]=mask;}
   }
   const scale = Math.min(1, MAX_EXPORT_SIDE / Math.max(doc.width, doc.height));
   const out = drawAsImage(<ExportScene doc={doc} images={images} scale={scale} />, { width: Math.max(1, Math.round(doc.width * scale)), height: Math.max(1, Math.round(doc.height * scale)) });
   return out.encodeToBase64();
+}
+/** Exports a single masked image as an actual transparent PNG for the sticker library. */
+export async function renderStickerBase64(layer: ImageLayer): Promise<{ base64: string; width: number; height: number }> {
+  const width = Math.max(1, Math.round(layer.sourceWidth || layer.width));
+  const height = Math.max(1, Math.round(layer.sourceHeight || layer.height));
+  const clean: ImageLayer = { ...layer, x: 0, y: 0, width, height, rotation: 0, perspectiveX: 0, perspectiveY: 0, opacity: 1, visible: true };
+  const data = await Skia.Data.fromURI(layer.uri);
+  const image = Skia.Image.MakeImageFromEncoded(data);
+  if (!image) throw new Error('No se pudo cargar la imagen del sticker');
+  const doc: EditorDocument = { width, height, layers: [clean], selectedId: null };
+  const images: Record<string, SkImage> = { [layer.id]: image };
+  if(layer.magicMaskUri){
+    const maskData=await Skia.Data.fromURI(layer.magicMaskUri);
+    const mask=Skia.Image.MakeImageFromEncoded(maskData);
+    if(!mask)throw new Error("No se pudo cargar la máscara del sticker");
+    images[`${layer.id}:mask`]=mask;
+  }
+  const scale = Math.min(1, MAX_EXPORT_SIDE / Math.max(width, height));
+  const result = drawAsImage(<ExportScene doc={doc} images={images} scale={scale} transparent />, {
+    width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale))
+  });
+  return { base64: result.encodeToBase64(), width: Math.max(1, Math.round(width * scale)), height: Math.max(1, Math.round(height * scale)) };
 }
 function hitTest(layers: EditorLayer[], x: number, y: number): EditorLayer | undefined {
   for (let i = layers.length - 1; i >= 0; i--) {
