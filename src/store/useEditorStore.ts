@@ -17,6 +17,7 @@ type State = {
   editBaseline: EditorDocument | null;
   beginEdit: () => void;
   finishEdit: () => void;
+  cancelEdit: () => void;
   undo: () => void;
   redo: () => void;
   setPhoto: (asset: PhotoAsset) => void;
@@ -71,6 +72,11 @@ export const useEditorStore = create<State>((set) => ({
     resetCoalesce();
     const changed = s.editBaseline !== s.document;
     return { editBaseline: null, past: changed ? [...s.past.slice(-(HISTORY_LIMIT - 1)), s.editBaseline] : s.past, future: changed ? [] : s.future };
+  }),
+  cancelEdit: () => set(s => {
+    if (!s.editBaseline) return s;
+    resetCoalesce();
+    return { document: s.editBaseline, editBaseline: null };
   }),
   undo: () => set(s => {
     if (!s.document || !s.past.length) return s;

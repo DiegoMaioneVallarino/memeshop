@@ -20,7 +20,7 @@ import { PhotoCanvas, renderStickerBase64, type PhotoCanvasHandle } from '../com
 import { EditorHeader, EditorToolbar, Sheet, SheetButton, type Tool } from '../components/editor/EditorChrome';
 import { useEditorStore } from '../store/useEditorStore';
 const GLITCH_NAMES = ['Slice Repeat','Block Displacement','RGB Split','Pixel Sorting','VHS Tracking','Compression Corruption','Datamosh','Data Dropout','Bit Crush','Interlace Error'];
-const FILTER_NAMES = ['Ninguno','Vibrante','Vintage','Desaturado','Brillante','Dramático','Pastel','Frío','Cálido',...GLITCH_NAMES];
+const FILTER_NAMES = ['Sustituir color','Ninguno','Vibrante','Vintage','Desaturado','Brillante','Dramático','Pastel','Frío','Cálido',...GLITCH_NAMES];
 const colors = ['#18e500','#ffffff','#111111','#25c5ff','#ffe05a','#65e89b'];
 function MiniButton({ label, onPress }: {label:string;onPress:()=>void}) { return <Pressable onPress={onPress} style={styles.mini}><Text style={styles.miniText}>{label}</Text></Pressable>; }
 export function EditorScreen() {
@@ -45,6 +45,8 @@ export function EditorScreen() {
   const wandSettingsRef=useRef({tolerance:25,feather:12,contiguous:true});
   const [filterCategory,setFilterCategory]=useState('TODOS');
   const [filterPreset,setFilterPreset]=useState('Ninguno');
+  const [replacementSource,setReplacementSource]=useState('#18e500');
+  const [replacementTarget,setReplacementTarget]=useState('#ff304f');
   useEffect(()=>{
     let alive=true;
     const start=Date.now();
@@ -82,6 +84,16 @@ export function EditorScreen() {
   const [maskSpread,setMaskSpread]=useState(35),[maskOpacity,setMaskOpacity]=useState(100);
   const [brushOpacity,setBrushOpacity]=useState(100),[brushHardness,setBrushHardness]=useState(100),[brushSpread,setBrushSpread]=useState(35);
   const canvas=useRef<PhotoCanvasHandle>(null);
+  const editing=useEditorStore(s=>!!s.editBaseline);
+  const beginEdit=useEditorStore(s=>s.beginEdit);
+  const finishEdit=useEditorStore(s=>s.finishEdit);
+  const cancelEdit=useEditorStore(s=>s.cancelEdit);
+  const actionTools:Tool[]=['effects','adjust','crop','rotate','perspective','transform','wand','brush','mask','text','stickers','images','add'];
+  useEffect(()=>{
+    if (!home && document && tool && actionTools.includes(tool)) beginEdit();
+  },[tool,home,!!document]);
+  const acceptAction=()=>{finishEdit();setGpuWand(null);setTool(null);};
+  const discardAction=()=>{wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);cancelEdit();setGpuWand(null);setWandPoint(null);setTool(null);};
   const selected=document?.layers.find(l=>l.id===document.selectedId);
   useEffect(()=>{if(tool!=='crop'&&tool!=='rotate'&&tool!=='perspective')setCrop(initialCrop);},[tool]);
   useEffect(()=>{setCrop(initialCrop);wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);wandPointRef.current=null;wandLayerRef.current=null;setWandPoint(null);setWandLayerId(null);setWandWorking(false);setGpuWand(null);},[document?.selectedId]);
@@ -94,7 +106,8 @@ export function EditorScreen() {
       // Normalize HEIC/HEIF and other iPhone formats to a decoder-friendly PNG.
       const normalized = await ImageManipulator.manipulateAsync(a.uri, [], { format: ImageManipulator.SaveFormat.PNG });
       const photo={uri:await durableImage(normalized.uri),width:normalized.width,height:normalized.height,name:a.fileName??undefined};
-      if(replace){setPhoto(photo);setTool(null);}else{addImage(photo);setTool('layers');}
+      beginEdit();
+      if(replace){const before=useEditorStore.getState().editBaseline;setPhoto(photo);if(before)useEditorStore.setState({editBaseline:before});setTool('images');}else{addImage(photo);setTool('images');}
     }catch(e){Alert.alert('Error al importar',String(e));}finally{setImageLoading(false);}
   }
   async function exportPreview(){
@@ -231,6 +244,7 @@ export function EditorScreen() {
   };
   const applyFilter=(name:string)=>{
     if(!selected||selected.type!=='image')return;
+    if(name==='Sustituir color'){update(selected.id,{colorReplace:{source:replacementSource,target:replacementTarget,tolerance:0.15,softness:0.08,strength:1}} as any);setFilterPreset(name);return;}
     const presets:Record<string,[number,number,number]>={Ninguno:[0,0,0],Vibrante:[.03,.16,.48],Vintage:[.08,-.12,-.38],Desaturado:[0,.06,-1],Brillante:[.18,.08,.12],Dramático:[-.08,.4,-.3],Pastel:[.12,-.18,-.15],Frío:[-.03,.06,-.12],Cálido:[.09,.06,.22]};
     const [brightness,contrast,saturation]=presets[name]||[0,0,0];
     const glitchIndex=GLITCH_NAMES.indexOf(name);
@@ -276,7 +290,7 @@ export function EditorScreen() {
   </View>;
   if(home)return <SafeAreaView style={{flex:1,backgroundColor:'white'}}><ProjectsHome projects={projects} onOpen={openProject} onCreate={newProject} onDelete={id=>{void deleteProject(id).then(()=>{void pruneAssets();return listProjects().then(setProjects);});}}/></SafeAreaView>;
   return <SafeAreaView style={styles.root}>
-    <EditorHeader back={()=>{void goHome();}} undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} exportImage={exportPreview} busy={busy} eraseImage={document && selected?.type==='image' ? ()=>{setMaskMode('erase');setTool('mask');setLayersOpen(false);} : undefined} eraseActive={tool==='mask'}/>
+    <EditorHeader editing={editing} applyEdit={acceptAction} cancelEdit={discardAction} back={()=>{void goHome();}} undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} exportImage={exportPreview} busy={busy} eraseImage={document && selected?.type==='image' ? ()=>{setMaskMode('erase');setTool('mask');setLayersOpen(false);} : undefined} eraseActive={tool==='mask'}/>
     <View style={styles.workspace}>{document?<PhotoCanvas key={`${document.width}-${document.height}`} ref={canvas} document={document} gpuWand={tool==='wand' ? gpuWand : null} mode={pickingColor?'eyedropper':tool==='brush'?'brush':tool==='mask'?'mask':tool==='wand'?'wand':'layer'} cropPreview={cropPreview} onWandPick={(x,y)=>void applyWand(x,y)} onPickColor={color=>{setBrushColor(color);setEraser(false);setPickingColor(false);setTool('brush');}} brush={{color:brushColor,size:brushSize,eraser,opacity:tool==='mask'?maskOpacity/100:brushOpacity/100,hardness:(tool==='mask'?maskHardness:brushHardness)/100,spread:tool==='mask'?maskSpread:brushSpread,restore:maskMode==='restore'}}/>:<View style={styles.empty}><Feather name="image" size={48} color="#aaa"/><Text style={styles.emptyTitle}>Comienza a crear</Text><MiniButton label="Elegir imagen" onPress={()=>importImage(true)}/></View>}{document && layersOpen && <LayersDrawer document={document} onClose={()=>setLayersOpen(false)}/>}</View>
     
     {document && tool && <View style={styles.sheetContainer}><Sheet title={{tools:'Herramientas',adjust:'Ajustes de imagen',brush:'Pincel',mask:'Borrar / restaurar',layers:'Capas',add:'Añadir elemento',transform:'Transformar capa',effects:'Efectos',crop:'Recortar',rotate:'Rotar',perspective:'Perspectiva',wand:'Varita mágica',text:'Texto',stickers:'Stickers',images:'Imágenes'}[tool]} onClose={()=>setTool(null)}>
@@ -294,7 +308,15 @@ export function EditorScreen() {
       {tool==='text' && <View style={styles.panel}><Text style={styles.help}>{tool==='effects'?'Los ajustes de brillo, contraste y saturación están disponibles en Herramientas → Ajustar. Los efectos avanzados llegarán después.':'Las capas de texto editable se implementarán en una próxima versión.'}</Text></View>}
       {tool==='effects' && <View style={{paddingBottom:16}}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>{['TODOS','COLORES','CÁMARA DIGITAL','ARTÍSTICOS','GLITCH'].map(c=><Pressable key={c} onPress={()=>setFilterCategory(c)} style={{padding:12,borderBottomWidth:filterCategory===c?2:0,borderBottomColor:'#19e500'}}><Text style={{color:filterCategory===c?'#19e500':'white',fontWeight:'600'}}>{c}</Text></Pressable>)}</ScrollView>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>{FILTER_NAMES.filter((n,i)=>filterCategory==='TODOS'||filterCategory==='GLITCH'&&i>=9||filterCategory==='COLORES'&&i<9||filterCategory==='CÁMARA DIGITAL'&&i<6||filterCategory==='ARTÍSTICOS'&&i>=4&&i<9).map(name=><Pressable key={name} onPress={()=>applyFilter(name)} style={{marginRight:9,width:116,alignItems:'center'}}><View style={{width:110,height:76,backgroundColor:GLITCH_NAMES.includes(name)?'#173e29':'#444',borderRadius:12,borderWidth:filterPreset===name?2:0,borderColor:'#19e500',alignItems:'center',justifyContent:'center'}}><Feather name={GLITCH_NAMES.includes(name)?'zap':'image'} size={27} color="white"/></View><Text numberOfLines={2} style={{color:'white',fontSize:11,marginTop:7,textAlign:'center'}}>{name}</Text></Pressable>)}</ScrollView>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>{FILTER_NAMES.filter((n,i)=>filterCategory==='TODOS'||filterCategory==='GLITCH'&&GLITCH_NAMES.includes(n)||filterCategory==='COLORES'&&i<11||filterCategory==='CÁMARA DIGITAL'&&i>=1&&i<7||filterCategory==='ARTÍSTICOS'&&i>=5&&i<11).map(name=><Pressable key={name} onPress={()=>applyFilter(name)} style={{marginRight:9,width:116,alignItems:'center'}}><View style={{width:110,height:76,backgroundColor:GLITCH_NAMES.includes(name)?'#173e29':'#444',borderRadius:12,borderWidth:filterPreset===name?2:0,borderColor:'#19e500',alignItems:'center',justifyContent:'center'}}><Feather name={GLITCH_NAMES.includes(name)?'zap':'image'} size={27} color="white"/></View><Text numberOfLines={2} style={{color:'white',fontSize:11,marginTop:7,textAlign:'center'}}>{name}</Text></Pressable>)}</ScrollView>
+        {selected?.type==='image' && selected.colorReplace && <View style={{paddingHorizontal:12,paddingTop:12,gap:7}}>
+          <Text style={styles.field}>Color original (selecciona uno)</Text>
+          <View style={styles.row}>{['#18e500','#ffffff','#111111','#ff304f','#25c5ff','#ffe05a','#0000ff','#ff8800'].map(c=><Pressable key={c} onPress={()=>{setReplacementSource(c);update(selected.id,{colorReplace:{...selected.colorReplace!,source:c}} as any);}} style={{width:29,height:29,borderRadius:15,backgroundColor:c,borderWidth:selected.colorReplace!.source===c?3:1,borderColor:'#aaa'}}/>)}</View>
+          <Text style={styles.field}>Sustituir por</Text>
+          <View style={styles.row}>{['#18e500','#ffffff','#111111','#ff304f','#25c5ff','#ffe05a','#0000ff','#ff8800'].map(c=><Pressable key={c} onPress={()=>{setReplacementTarget(c);update(selected.id,{colorReplace:{...selected.colorReplace!,target:c}} as any);}} style={{width:29,height:29,borderRadius:15,backgroundColor:c,borderWidth:selected.colorReplace!.target===c?3:1,borderColor:'#aaa'}}/>)}</View>
+          {([['tolerance','Sensibilidad'],['softness','Suavidad'],['strength','Intensidad']] as const).map(([key,label])=><View key={key}><Text style={styles.field}>{label} · {Math.round(selected.colorReplace![key]*100)}%</Text><Slider minimumValue={0} maximumValue={1} step={0.01} value={selected.colorReplace![key]} onValueChange={v=>update(selected.id,{colorReplace:{...selected.colorReplace!,[key]:v}} as any)} minimumTrackTintColor="#19e500" thumbTintColor="#19e500" /></View>)}
+          <MiniButton label="Desactivar sustitución" onPress={()=>update(selected.id,{colorReplace:undefined} as any)}/>
+        </View>}
         {selected?.type==='image' && selected.glitchSettings && <View style={{paddingHorizontal:12,paddingTop:12}}>
           <Text style={styles.field}>Intensidad · {Math.round(selected.glitchSettings.intensity*100)}%</Text>
           <Slider minimumValue={0} maximumValue={2} step={0.01} value={selected.glitchSettings.intensity} onValueChange={v=>update(selected.id,{glitchSettings:{...selected.glitchSettings!,intensity:v}} as any)} minimumTrackTintColor="#19e500" thumbTintColor="#19e500" />

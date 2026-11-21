@@ -123,6 +123,29 @@ const glitchEffect = Skia.RuntimeEffect.Make(`
    return sampleAt(uv);
  }
 `);
+// Reemplazo cromático suave, calculado en GPU. Conserva luminancia y alfa.
+const replaceColorEffect = Skia.RuntimeEffect.Make(`
+ uniform shader source;
+ uniform float3 sourceColor;
+ uniform float3 targetColor;
+ uniform float tolerance;
+ uniform float softness;
+ uniform float strength;
+ half4 main(float2 xy) {
+   half4 c = source.eval(xy);
+   float distance = length(float3(c.rgb) - sourceColor) / 1.7320508;
+   float edge = max(0.001, softness * 0.3);
+   float match = 1.0 - smoothstep(max(0.0,tolerance-edge), tolerance+edge, distance);
+   float lum = dot(float3(c.rgb),float3(0.2126,0.7152,0.0722));
+   float targetLum = max(0.04,dot(targetColor,float3(0.2126,0.7152,0.0722)));
+   float3 replacement = clamp(targetColor * (lum / targetLum),float3(0.0),float3(1.0));
+   return half4(mix(float3(c.rgb),replacement,match*strength),c.a);
+ }
+`);
+function rgb(hex:string):number[] {
+ const clean=hex.replace('#','');
+ return [0,2,4].map(i=>parseInt(clean.slice(i,i+2),16)/255);
+}
 // Global color-key preview runs in the GPU fragment shader. Contiguous flood-fill
 // still requires CPU graph traversal; it cannot be emulated by a per-pixel shader.
 const wandEffect = Skia.RuntimeEffect.Make(`
@@ -200,6 +223,12 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
       {hasAdjustments && <ColorMatrix matrix={adjustmentMatrix(adj!.brightness ?? 0, adj!.contrast ?? 0, adj!.saturation ?? 0)} />}
     </SkiaImage>
   );
+  const recolor=layer.colorReplace;
+  const recolored = recolor && replaceColorEffect ? <Rect x={0} y={0} width={layer.width} height={layer.height}>
+    <Shader source={replaceColorEffect} uniforms={{sourceColor:rgb(recolor.source),targetColor:rgb(recolor.target),tolerance:recolor.tolerance,softness:recolor.softness,strength:recolor.strength}}>
+      <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
+    </Shader>
+  </Rect> : content;
   const strokes = [...(layer.maskStrokes ?? []), ...(preview ? [preview] : [])];
   const gpu = gpuWand?.layerId === layer.id && wandEffect ? gpuWand : null;
   const gpuMask = gpu ? <Rect x={0} y={0} width={layer.width} height={layer.height}>
@@ -207,8 +236,8 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
       <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
     </Shader>
   </Rect> : null;
-  if (!strokes.length && !layer.magicMaskUri && !gpu) return content;
-  return <Mask mode="alpha" mask={<Group>{gpuMask ?? (wandMask ? <SkiaImage image={wandMask} x={0} y={0} width={layer.width} height={layer.height} fit="fill" /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />)}{strokes.map(st => <MaskPath key={st.id} stroke={st} />)}</Group>}>{content}</Mask>;
+  if (!strokes.length && !layer.magicMaskUri && !gpu) return recolored;
+  return <Mask mode="alpha" mask={<Group>{gpuMask ?? (wandMask ? <SkiaImage image={wandMask} x={0} y={0} width={layer.width} height={layer.height} fit="fill" /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />)}{strokes.map(st => <MaskPath key={st.id} stroke={st} />)}</Group>}>{recolored}</Mask>;
 }
 // True projective homography from a rectangle to four target corners.
 // Unlike skew, parallel edges can converge to vanishing points.
