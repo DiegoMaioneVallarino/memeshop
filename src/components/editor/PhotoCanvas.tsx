@@ -7,7 +7,7 @@ import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, 
 import { useEditorStore } from '../../store/useEditorStore';
 
 export type PhotoCanvasHandle = { snapshotBase64: () => Promise<string | null>; sampleColors: () => Promise<string[]>; reset: () => void };
-export type InteractionMode = 'layer' | 'view' | 'brush' | 'mask' | 'eyedropper';
+export type InteractionMode = 'layer' | 'view' | 'brush' | 'mask' | 'eyedropper' | 'wand';
 export type BrushOptions = { color: string; size: number; eraser: boolean; opacity?: number; hardness?: number; spread?: number; restore?: boolean };
 type Viewport = { zoom: number; x: number; y: number; rotation: number };
 const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
@@ -56,6 +56,7 @@ function MaskPath({ stroke }: { stroke: MaskStroke }) {
   return <BrushPath points={stroke.points} width={stroke.radius * 2} color={stroke.restore ? '#ffffff' : '#000000'} opacity={stroke.opacity} softness={softnessOf(stroke.spread, stroke.hardness)} />;
 }
 function ImageContent({ layer, preview, preloaded }: { layer: ImageLayer; preview?: MaskStroke | null; preloaded?: SkImage }) {
+  const wandMask = useImage(layer.magicMaskUri ?? null);
   const loaded = useImage(preloaded ? null : layer.uri);
   const image = preloaded ?? loaded;
   if (!image) return null;
@@ -69,8 +70,8 @@ function ImageContent({ layer, preview, preloaded }: { layer: ImageLayer; previe
     </SkiaImage>
   );
   const strokes = [...(layer.maskStrokes ?? []), ...(preview ? [preview] : [])];
-  if (!strokes.length) return content;
-  return <Mask mode="luminance" mask={<Group><Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />{strokes.map(st => <MaskPath key={st.id} stroke={st} />)}</Group>}>{content}</Mask>;
+  if (!strokes.length && !layer.magicMaskUri) return content;
+  return <Mask mode="alpha" mask={<Group>{wandMask ? <SkiaImage image={wandMask} x={0} y={0} width={layer.width} height={layer.height} fit="fill" /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />}{strokes.map(st => <MaskPath key={st.id} stroke={st} />)}</Group>}>{content}</Mask>;
 }
 // True projective homography from a rectangle to four target corners.
 // Unlike skew, parallel edges can converge to vanishing points.
@@ -180,7 +181,7 @@ function hitTest(layers: EditorLayer[], x: number, y: number): EditorLayer | und
   }
 }
 
-export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocument; mode: InteractionMode; brush?: BrushOptions; onPickColor?: (color:string)=>void; cropPreview?: CropPreview | null }>(function PhotoCanvas({ document, mode, brush = { color: '#ff508e', size: 20, eraser: false }, onPickColor, cropPreview }, ref) {
+export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocument; mode: InteractionMode; brush?: BrushOptions; onPickColor?: (color:string)=>void; onWandPick?: (x:number,y:number)=>void; cropPreview?: CropPreview | null }>(function PhotoCanvas({ document, mode, brush = { color: '#ff508e', size: 20, eraser: false }, onPickColor, onWandPick, cropPreview }, ref) {
   const canvas = useRef<React.ElementRef<typeof Canvas>>(null);
   const [pickerHud,setPickerHud]=useState<{x:number;y:number;color:string}|null>(null);
   const pickerCache=useRef<{pixels:Uint8Array|Uint8ClampedArray;width:number;height:number}|null>(null);
@@ -196,6 +197,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   vpRef.current = viewport;
   sizeRef.current = size;
   modeRef.current = mode;
+  const onWandRef = useRef(onWandPick); onWandRef.current = onWandPick;
   const onPickRef = useRef(onPickColor);
   onPickRef.current = onPickColor;
   const brushRef = useRef(brush);
@@ -246,6 +248,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   const begin = (x: number, y: number) => {
     if (active.current) return;
     const d = toDoc(x, y);
+    if (modeRef.current === 'wand') return;
     if (modeRef.current === 'mask') {
       const current = useEditorStore.getState().document;
       const image = current?.layers.find(l => l.id === current.selectedId && l.type === 'image');
@@ -453,8 +456,8 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       .onStart(() => cameraStart())
       .onUpdate(e => cameraUpdate({ scale: e.scale }))
       .onFinalize(() => { camera.current = null; });
-    const tap = Gesture.Tap().runOnJS(true).onEnd(e => { if (mode === 'eyedropper') { void readColors({x:e.x,y:e.y}).then(cs=>{if(cs[0])onPickRef.current?.(cs[0]);}); } else if (mode !== 'brush') { begin(e.x, e.y); end(); } });
-    return mode==='eyedropper' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),pickerGesture) : Gesture.Race(Gesture.Simultaneous(twoFinger, pinchGesture), oneFinger, tap);
+    const tap = Gesture.Tap().runOnJS(true).onEnd(e => { if (mode === 'wand') { const d=toDoc(e.x,e.y); const current=useEditorStore.getState().document; const l=current?.layers.find(v=>v.id===current.selectedId); if(l?.type==='image'){const pt=toLocal(d,l);onWandRef.current?.(pt.x/l.width,pt.y/l.height);} } else if (mode === 'eyedropper') { void readColors({x:e.x,y:e.y}).then(cs=>{if(cs[0])onPickRef.current?.(cs[0]);}); } else if (mode !== 'brush') { begin(e.x, e.y); end(); } });
+    return mode==='wand' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),tap) : mode==='eyedropper' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),pickerGesture) : Gesture.Race(Gesture.Simultaneous(twoFinger, pinchGesture), oneFinger, tap);
   }, [mode, document.width, document.height]);
 
   return <GestureDetector gesture={gesture}>

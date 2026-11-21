@@ -29,7 +29,7 @@ export async function pruneAssets(graceSeconds=30):Promise<number>{
   const dir=FileSystem.documentDirectory+ASSETS_DIR;
   if(!(await FileSystem.getInfoAsync(dir)).exists)return 0;
   const keep=new Set<string>();
-  for(const p of projects)for(const l of p.document.layers)if(l.type==='image')keep.add(baseName(l.uri));
+  for(const p of projects)for(const l of p.document.layers)if(l.type==='image'){keep.add(baseName(l.uri));if(l.magicMaskUri)keep.add(baseName(l.magicMaskUri));}
   let removed=0;
   for(const name of await FileSystem.readDirectoryAsync(dir)){
    if(keep.has(name))continue;
