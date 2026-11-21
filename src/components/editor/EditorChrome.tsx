@@ -1,17 +1,17 @@
 import React from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-export type Tool = 'tools' | 'adjust' | 'brush' | 'layers' | 'add' | 'transform' | 'effects' | 'text' | 'stickers' | 'images' | 'mask';
+export type Tool = 'tools' | 'adjust' | 'brush' | 'layers' | 'add' | 'transform' | 'effects' | 'text' | 'stickers' | 'images' | 'mask' | 'crop' | 'rotate' | 'perspective';
 const palette = { bg: '#101010', panel: '#191919', text: '#f5f5f5', muted: '#a9a9a9', accent: '#d83cc6' };
 export function IconAction({ icon, label, onPress, active, disabled }: { icon: React.ComponentProps<typeof Feather>['name']; label?: string; onPress: () => void; active?: boolean; disabled?: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label || icon} onPress={onPress} disabled={disabled} style={[styles.action, active && styles.active, disabled && {opacity: .3}]}><Feather name={icon} size={23} color={active ? palette.accent : palette.text}/>{label ? <Text numberOfLines={1} style={[styles.label, active && {color:palette.accent}]}>{label}</Text> : null}</Pressable>;
 }
-export function EditorHeader({ undo, redo, canUndo, canRedo, exportImage, back, busy }: { undo:()=>void; redo:()=>void; canUndo:boolean; canRedo:boolean; exportImage:()=>void; back:()=>void; busy:boolean }) {
-  return <View style={styles.header}><IconAction icon="arrow-left" onPress={back} label="Atrás"/><View style={styles.headerCenter}><IconAction icon="corner-up-left" onPress={undo} disabled={!canUndo}/><IconAction icon="corner-up-right" onPress={redo} disabled={!canRedo}/><IconAction icon="download" onPress={exportImage} disabled={busy}/></View><Pressable onPress={exportImage} disabled={busy}><Text style={styles.export}>{busy ? 'Guardando' : 'Exportar'}</Text></Pressable></View>;
+export function EditorHeader({ undo, redo, canUndo, canRedo, exportImage, back, busy, eraseImage, eraseActive }: { eraseImage?:()=>void; eraseActive?:boolean; undo:()=>void; redo:()=>void; canUndo:boolean; canRedo:boolean; exportImage:()=>void; back:()=>void; busy:boolean }) {
+  return <View style={styles.header}><IconAction icon="arrow-left" onPress={back} label="Atrás"/><View style={styles.headerCenter}><IconAction icon="corner-up-left" onPress={undo} disabled={!canUndo}/><IconAction icon="corner-up-right" onPress={redo} disabled={!canRedo}/><IconAction icon="download" onPress={exportImage} disabled={busy}/>{eraseImage && <IconAction icon="delete" label="Goma" onPress={eraseImage} active={eraseActive}/>}</View><Pressable onPress={exportImage} disabled={busy}><Text style={styles.export}>{busy ? 'Guardando' : 'Exportar'}</Text></Pressable></View>;
 }
 const tools: { id: Tool; icon: React.ComponentProps<typeof Feather>['name']; label:string }[] = [
   {id:'tools',icon:'crop',label:'Herramientas'}, {id:'effects',icon:'zap',label:'Efectos'},
-  {id:'text',icon:'type',label:'Texto'}, {id:'brush',icon:'edit-3',label:'Retocar'},
+  {id:'text',icon:'type',label:'Texto'},
   {id:'stickers',icon:'smile',label:'Stickers'}, {id:'images',icon:'image',label:'Imágenes'},
   {id:'layers',icon:'layers',label:'Capas'}
 ];

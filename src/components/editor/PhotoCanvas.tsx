@@ -1,12 +1,13 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
-import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask } from '@shopify/react-native-skia';
+import { StyleSheet, View, Text } from 'react-native';
+import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask, Skia, BlurMask, drawAsImage } from '@shopify/react-native-skia';
+import type { SkImage } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke } from '../../types/editor';
 import { useEditorStore } from '../../store/useEditorStore';
 
-export type PhotoCanvasHandle = { snapshotBase64: () => string | null; reset: () => void };
-export type InteractionMode = 'layer' | 'view' | 'brush' | 'mask';
+export type PhotoCanvasHandle = { snapshotBase64: () => Promise<string | null>; sampleColors: () => Promise<string[]>; reset: () => void };
+export type InteractionMode = 'layer' | 'view' | 'brush' | 'mask' | 'eyedropper';
 export type BrushOptions = { color: string; size: number; eraser: boolean; opacity?: number; hardness?: number; spread?: number; restore?: boolean };
 type Viewport = { zoom: number; x: number; y: number; rotation: number };
 const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
@@ -14,41 +15,120 @@ const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
 function adjustmentMatrix(brightness: number, contrast: number, saturation: number) {
   const c = Math.max(0, 1 + contrast), sat = Math.max(0, 1 + saturation);
   const lr = .2126 * (1 - sat), lg = .7152 * (1 - sat), lb = .0722 * (1 - sat);
-  const b = brightness * 255 + 128 * (1 - c);
+  // Skia's ColorMatrix offset column is normalized 0..1 (NOT 0..255). Contrast pivots around mid-gray (0.5).
+  const b = brightness + .5 * (1 - c);
   return [c*(lr+sat),c*lg,c*lb,0,b, c*lr,c*(lg+sat),c*lb,0,b, c*lr,c*lg,c*(lb+sat),0,b, 0,0,0,1,0];
+}
+// Edge softness 0..0.98. `spread` feathers the edge; `hardness` (0..1, 1 = hard) also softens it when lowered.
+const softnessOf = (spread = 0, hardness = 1) => Math.max(0, Math.min(.98, Math.max(spread / 100, 1 - hardness)));
+// A whole stroke becomes ONE smoothed path (quadratic curves through midpoints) instead of thousands of circles.
+function strokePath(points: StrokePoint[]): string {
+  if (!points.length) return '';
+  const p0 = points[0];
+  if (points.length === 1) return `M ${p0.x} ${p0.y} L ${p0.x + .01} ${p0.y}`; // round cap draws a dot
+  let d = `M ${p0.x} ${p0.y}`;
+  for (let i = 1; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    d += ` Q ${a.x} ${a.y} ${(a.x + b.x) / 2} ${(a.y + b.y) / 2}`;
+  }
+  const last = points[points.length - 1];
+  return d + ` L ${last.x} ${last.y}`;
+}
+// Opacity is applied once to the whole path, so overlapping segments never darken (no "beads").
+function BrushPath({ points, width, color, opacity, softness }: { points: StrokePoint[]; width: number; color: string; opacity: number; softness: number }) {
+  const d = useMemo(() => strokePath(points), [points]);
+  if (!d) return null;
+  return <Path path={d} color={color} style="stroke" strokeWidth={width} strokeCap="round" strokeJoin="round" opacity={opacity}>
+    {softness > .015 && <BlurMask blur={Math.max(.1, width / 2 * softness * .5)} style="normal" />}
+  </Path>;
 }
 function StrokeShape({ stroke }: { stroke: BrushStroke }) {
   if (!stroke.points.length) return null;
-  const p = stroke.points;
-  const d = p.length === 1 ? `M ${p[0].x} ${p[0].y} l 0.01 0` : `M ${p[0].x} ${p[0].y} ` + p.slice(1).map(v => `L ${v.x} ${v.y}`).join(' ');
-  return <Path path={d} color={stroke.color} style="stroke" strokeWidth={stroke.size} strokeCap="round" strokeJoin="round" opacity={stroke.opacity ?? 1} blendMode={stroke.eraser ? 'dstOut' : 'srcOver'} />;
+  const path = <BrushPath points={stroke.points} width={stroke.size} color={stroke.eraser ? '#000000' : stroke.color} opacity={stroke.opacity ?? 1} softness={softnessOf(stroke.spread, stroke.hardness)} />;
+  return stroke.eraser ? <Group layer={<Paint blendMode="dstOut" />}>{path}</Group> : path;
 }
-function PaintContent({ layer }: { layer: PaintLayer }) {
-  return <Group layer>{layer.strokes.map(stroke => <StrokeShape key={stroke.id} stroke={stroke} />)}</Group>;
+// The in-progress stroke is rendered INSIDE the paint layer's isolated group, so an eraser preview
+// only erases that layer's strokes (it used to punch through the photo until the finger was lifted).
+function PaintContent({ layer, preview }: { layer: PaintLayer; preview?: BrushStroke | null }) {
+  return <Group layer>{layer.strokes.map(stroke => <StrokeShape key={stroke.id} stroke={stroke} />)}{preview && <StrokeShape stroke={preview} />}</Group>;
 }
 function MaskPath({ stroke }: { stroke: MaskStroke }) {
-  const p = stroke.points;
-  if (!p.length) return null;
-  const d = p.length === 1 ? `M ${p[0].x} ${p[0].y} l .01 0` : `M ${p[0].x} ${p[0].y} ` + p.slice(1).map(v => `L ${v.x} ${v.y}`).join(' ');
-  return <Path path={d} style="stroke" strokeWidth={stroke.radius * 2} strokeCap="round" strokeJoin="round" color={stroke.restore ? '#ffffff' : '#000000'} opacity={stroke.opacity} />;
+  return <BrushPath points={stroke.points} width={stroke.radius * 2} color={stroke.restore ? '#ffffff' : '#000000'} opacity={stroke.opacity} softness={softnessOf(stroke.spread, stroke.hardness)} />;
 }
-function ImageContent({ layer, preview }: { layer: ImageLayer; preview?: MaskStroke | null }) {
-  const image = useImage(layer.uri);
+function ImageContent({ layer, preview, preloaded }: { layer: ImageLayer; preview?: MaskStroke | null; preloaded?: SkImage }) {
+  const loaded = useImage(preloaded ? null : layer.uri);
+  const image = preloaded ?? loaded;
   if (!image) return null;
-  const content = <Group layer={layer.adjustments ? <Paint><ColorMatrix matrix={adjustmentMatrix(layer.adjustments.brightness, layer.adjustments.contrast, layer.adjustments.saturation)} /></Paint> : undefined}><SkiaImage image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" /></Group>;
+  // Attach the color filter to the image's own paint rather than an offscreen
+  // Group layer. An offscreen layer with a nested Paint was rendering black on iOS.
+  const adj = layer.adjustments;
+  const hasAdjustments = !!adj && (Math.abs(adj.brightness ?? 0) > 0.0001 || Math.abs(adj.contrast ?? 0) > 0.0001 || Math.abs(adj.saturation ?? 0) > 0.0001);
+  const content = (
+    <SkiaImage image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill">
+      {hasAdjustments && <ColorMatrix matrix={adjustmentMatrix(adj!.brightness ?? 0, adj!.contrast ?? 0, adj!.saturation ?? 0)} />}
+    </SkiaImage>
+  );
   const strokes = [...(layer.maskStrokes ?? []), ...(preview ? [preview] : [])];
   if (!strokes.length) return content;
   return <Mask mode="luminance" mask={<Group><Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />{strokes.map(st => <MaskPath key={st.id} stroke={st} />)}</Group>}>{content}</Mask>;
 }
-function LayerContent({ layer, selected, previewMask }: { layer: EditorLayer; selected: boolean; previewMask?: MaskStroke | null }) {
+// True projective homography from a rectangle to four target corners.
+// Unlike skew, parallel edges can converge to vanishing points.
+function perspectiveMatrix(w:number,h:number,px:number,py:number){
+  const dx=px*w*.42,dy=py*h*.42;
+  const target=[[dx,dy],[w-dx,-dy],[w+dx,h+dy],[-dx,h-dy]];
+  const source=[[0,0],[w,0],[w,h],[0,h]];
+  const a:number[][]=[];
+  for(let i=0;i<4;i++){
+    const [x,y]=source[i],[u,v]=target[i];
+    a.push([x,y,1,0,0,0,-u*x,-u*y,u]);
+    a.push([0,0,0,x,y,1,-v*x,-v*y,v]);
+  }
+  for(let col=0;col<8;col++){
+    let pivot=col;
+    for(let row=col+1;row<8;row++)if(Math.abs(a[row][col])>Math.abs(a[pivot][col]))pivot=row;
+    if(Math.abs(a[pivot][col])<1e-9)return Skia.Matrix();
+    [a[col],a[pivot]]=[a[pivot],a[col]];
+    const scale=a[col][col];for(let k=col;k<=8;k++)a[col][k]/=scale;
+    for(let row=0;row<8;row++)if(row!==col){const factor=a[row][col];for(let k=col;k<=8;k++)a[row][k]-=factor*a[col][k];}
+  }
+  const q=a.map(row=>row[8]);
+  const matrix=Skia.Matrix();
+  matrix.concat([q[0],q[1],q[2],q[3],q[4],q[5],q[6],q[7],1]);
+  return matrix;
+}
+export type CropPreview = { layerId: string; rect: { x: number; y: number; w: number; h: number }; angle: number };
+// Dims everything outside the crop rectangle (image-local coordinates) and draws a rule-of-thirds grid.
+function CropOverlay({ width, height, rect }: { width: number; height: number; rect: CropPreview['rect'] }) {
+  const x = rect.x * width, y = rect.y * height, w = rect.w * width, h = rect.h * height;
+  const sw = Math.max(1, Math.min(width, height) / 220);
+  const grid = `M ${x + w / 3} ${y} V ${y + h} M ${x + 2 * w / 3} ${y} V ${y + h} M ${x} ${y + h / 3} H ${x + w} M ${x} ${y + 2 * h / 3} H ${x + w}`;
+  return <Group>
+    <Path path={`M 0 0 H ${width} V ${height} H 0 Z M ${x} ${y} H ${x + w} V ${y + h} H ${x} Z`} fillType="evenOdd" color="rgba(0,0,0,0.6)" />
+    <Path path={grid} color="rgba(255,255,255,0.55)" style="stroke" strokeWidth={sw * .6} />
+    <Rect x={x} y={y} width={w} height={h} color="#ffffff" style="stroke" strokeWidth={sw * 1.4} />
+  </Group>;
+}
+function LayerContent({ layer, selected, previewMask, previewStroke, images, cropPreview }: { layer: EditorLayer; selected: boolean; previewMask?: MaskStroke | null; previewStroke?: BrushStroke | null; images?: Record<string, SkImage>; cropPreview?: CropPreview | null }) {
   if (!layer.visible) return null;
+  const flipX = layer.type === 'image' && !!layer.flipX;
   const transform = [
     { translateX: layer.x + layer.width / 2 }, { translateY: layer.y + layer.height / 2 },
     { rotate: layer.rotation }, { translateX: -layer.width / 2 }, { translateY: -layer.height / 2 },
   ];
   return <Group transform={transform}>
     <Group opacity={layer.opacity}>
-      {layer.type === 'image' ? <ImageContent layer={layer} preview={previewMask} /> : layer.type === 'paint' ? <PaintContent layer={layer} /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />}
+      {/* flipX mirrors only the content (image + mask + crop overlay); selection handles below stay upright. */}
+      <Group transform={flipX ? [{ translateX: layer.width / 2 }, { scaleX: -1 }, { translateX: -layer.width / 2 }] : undefined}>
+        {layer.type === 'image' ? (() => {
+          const crop = cropPreview && cropPreview.layerId === layer.id ? cropPreview : null;
+          let body = <ImageContent layer={layer} preview={previewMask} preloaded={images?.[layer.id]} />;
+          // Straighten preview: the image turns under the fixed crop rectangle.
+          if (crop && crop.angle) body = <Group transform={[{ translateX: layer.width / 2 }, { translateY: layer.height / 2 }, { rotate: crop.angle }, { translateX: -layer.width / 2 }, { translateY: -layer.height / 2 }]}>{body}</Group>;
+          const projected = (layer.perspectiveX || layer.perspectiveY) ? <Group matrix={perspectiveMatrix(layer.width,layer.height,layer.perspectiveX??0,layer.perspectiveY??0)}>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</Group> : <>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</>;
+          return projected;
+        })() : layer.type === 'paint' ? <PaintContent layer={layer} preview={previewStroke} /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />}
+      </Group>
     </Group>
     {selected && <Group>
       <Rect x={0} y={0} width={layer.width} height={layer.height} color="#e9e9e9" style="stroke" strokeWidth={Math.max(1, Math.min(layer.width, layer.height) / 180)} />
@@ -66,6 +146,29 @@ function LayerContent({ layer, selected, previewMask }: { layer: EditorLayer; se
     </Group>}
   </Group>;
 }
+// Offscreen scene for export: document coordinates only (no viewport, no selection handles), clipped to the document.
+const MAX_EXPORT_SIDE = 4096;
+function ExportScene({ doc, images, scale }: { doc: EditorDocument; images: Record<string, SkImage>; scale: number }) {
+  return <Group transform={[{ scale }]}>
+    <Group clip={{ x: 0, y: 0, width: doc.width, height: doc.height }}>
+      <Rect x={0} y={0} width={doc.width} height={doc.height} color="#ffffff" />
+      {doc.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={false} images={images} />)}
+    </Group>
+  </Group>;
+}
+async function renderDocumentBase64(doc: EditorDocument): Promise<string> {
+  const images: Record<string, SkImage> = {};
+  for (const l of doc.layers) {
+    if (l.type !== 'image' || !l.visible) continue;
+    const data = await Skia.Data.fromURI(l.uri);
+    const img = Skia.Image.MakeImageFromEncoded(data);
+    if (!img) throw new Error(`No se pudo decodificar la imagen de la capa "${l.name}".`);
+    images[l.id] = img;
+  }
+  const scale = Math.min(1, MAX_EXPORT_SIDE / Math.max(doc.width, doc.height));
+  const out = drawAsImage(<ExportScene doc={doc} images={images} scale={scale} />, { width: Math.max(1, Math.round(doc.width * scale)), height: Math.max(1, Math.round(doc.height * scale)) });
+  return out.encodeToBase64();
+}
 function hitTest(layers: EditorLayer[], x: number, y: number): EditorLayer | undefined {
   for (let i = layers.length - 1; i >= 0; i--) {
     const l = layers[i];
@@ -77,8 +180,14 @@ function hitTest(layers: EditorLayer[], x: number, y: number): EditorLayer | und
   }
 }
 
-export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocument; mode: InteractionMode; brush?: BrushOptions }>(function PhotoCanvas({ document, mode, brush = { color: '#ff508e', size: 20, eraser: false } }, ref) {
+export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocument; mode: InteractionMode; brush?: BrushOptions; onPickColor?: (color:string)=>void; cropPreview?: CropPreview | null }>(function PhotoCanvas({ document, mode, brush = { color: '#ff508e', size: 20, eraser: false }, onPickColor, cropPreview }, ref) {
   const canvas = useRef<React.ElementRef<typeof Canvas>>(null);
+  const [pickerHud,setPickerHud]=useState<{x:number;y:number;color:string}|null>(null);
+  const pickerCache=useRef<{pixels:Uint8Array|Uint8ClampedArray;width:number;height:number}|null>(null);
+  const pickerToken=useRef(0);
+  const pickerColorRef=useRef<string|null>(null);
+  const lastPickerSample=useRef(0);
+
   const [size, setSize] = useState({ width: 1, height: 1 });
   const [viewport, setViewport] = useState<Viewport>({ zoom: 1, x: 0, y: 0, rotation: 0 });
   const vpRef = useRef(viewport);
@@ -87,6 +196,8 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   vpRef.current = viewport;
   sizeRef.current = size;
   modeRef.current = mode;
+  const onPickRef = useRef(onPickColor);
+  onPickRef.current = onPickColor;
   const brushRef = useRef(brush);
   brushRef.current = brush;
   const pendingStroke = useRef<{ id: string; points: StrokePoint[] } | null>(null);
@@ -117,7 +228,20 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   const toLocal = (d: StrokePoint, layer: EditorLayer): StrokePoint => {
     const cx = layer.x + layer.width / 2, cy = layer.y + layer.height / 2;
     const dx = d.x - cx, dy = d.y - cy, c = Math.cos(layer.rotation), s = Math.sin(layer.rotation);
-    return { x: dx * c + dy * s + layer.width / 2, y: -dx * s + dy * c + layer.height / 2 };
+    const lx = dx * c + dy * s + layer.width / 2;
+    // Mask strokes live in image space; on a mirrored image the finger's x must be mirrored back.
+    return { x: layer.type === 'image' && layer.flipX ? layer.width - lx : lx, y: -dx * s + dy * c + layer.height / 2 };
+  };
+  // Slider values are relative to a ~1000px-wide photo; scale so the brush is usable on 4000px photos too.
+  const sizeUnit = () => Math.max(1, Math.max(document.width, document.height) / 1000);
+  const uid = () => `${Date.now()}-${Math.random()}`;
+  const makeStroke = (id: string, points: StrokePoint[]): BrushStroke => {
+    const b = brushRef.current;
+    return { id, points, color: b.color, size: b.size * sizeUnit(), eraser: b.eraser, opacity: b.opacity ?? 1, hardness: b.hardness ?? 1, spread: b.spread ?? 0 };
+  };
+  const makeMask = (id: string, points: StrokePoint[]): MaskStroke => {
+    const b = brushRef.current;
+    return { id, points, radius: b.size * sizeUnit(), opacity: b.opacity ?? 1, spread: b.spread ?? 20, hardness: b.hardness ?? 1, restore: !!b.restore };
   };
   const begin = (x: number, y: number) => {
     if (active.current) return;
@@ -129,7 +253,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       const local = toLocal(d, image);
       pendingMask.current = { id: image.id, points: [local] };
       beginEdit();
-      setPreviewMask({ id: 'preview', points: [local], radius: brushRef.current.size, opacity: brushRef.current.opacity ?? 1, spread: brushRef.current.spread ?? 20, restore: !!brushRef.current.restore });
+      setPreviewMask(makeMask('preview', [local]));
       return;
     }
     if (modeRef.current === 'brush') {
@@ -139,7 +263,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       const local = toLocal(d, paint);
       pendingStroke.current = { id: paint.id, points: [local] };
       beginEdit();
-      setPreviewStroke({ id: 'preview', points: [local], ...brushRef.current });
+      setPreviewStroke(makeStroke('preview', [local]));
       return;
     }
     const current = useEditorStore.getState().document;
@@ -170,9 +294,9 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       if (!layer) return;
       const p = toLocal(toDoc(x, y), layer);
       const last = mask.points[mask.points.length - 1];
-      if (Math.hypot(p.x-last.x, p.y-last.y) < Math.max(1, brushRef.current.size * (brushRef.current.spread ?? 20) / 100)) return;
+      if (Math.hypot(p.x-last.x, p.y-last.y) < .75) return;
       mask.points.push(p);
-      setPreviewMask({ id: 'preview', points: [...mask.points], radius: brushRef.current.size, opacity: brushRef.current.opacity ?? 1, spread: brushRef.current.spread ?? 20, restore: !!brushRef.current.restore });
+      setPreviewMask(makeMask('preview', [...mask.points]));
       return;
     }
 
@@ -182,9 +306,9 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     if (!layer) return;
     const p = toLocal(toDoc(x, y), layer);
     const last = pending.points[pending.points.length - 1];
-    if (Math.hypot(p.x-last.x, p.y-last.y) < 1) return;
+    if (Math.hypot(p.x-last.x, p.y-last.y) < .75) return;
     pending.points.push(p);
-    setPreviewStroke({ id: 'preview', points: [...pending.points], ...brushRef.current });
+    setPreviewStroke(makeStroke('preview', [...pending.points]));
   };
   const drag = (dx: number, dy: number) => {
     const a = active.current;
@@ -230,7 +354,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   const end = () => {
     if (pendingMask.current) {
       const m = pendingMask.current;
-      appendMaskStroke(m.id, { id: `${Date.now()}-${Math.random()}`, points: m.points, radius: brushRef.current.size, opacity: brushRef.current.opacity ?? 1, spread: brushRef.current.spread ?? 20, restore: !!brushRef.current.restore });
+      appendMaskStroke(m.id, makeMask(uid(), m.points));
       pendingMask.current = null;
       setPreviewMask(null);
       finishEdit();
@@ -238,7 +362,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
 
     const pending = pendingStroke.current;
     if (pending) {
-      appendStroke(pending.id, { id: `${Date.now()}-${Math.random()}`, points: pending.points, ...brushRef.current });
+      appendStroke(pending.id, makeStroke(uid(), pending.points));
       pendingStroke.current = null;
       setPreviewStroke(null);
       finishEdit();
@@ -247,7 +371,53 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     active.current = null;
   };
   const reset = () => { const next = { zoom: 1, x: 0, y: 0, rotation: 0 }; vpRef.current = next; setViewport(next); };
-  useImperativeHandle(ref, () => ({ snapshotBase64: () => canvas.current?.makeImageSnapshot()?.encodeToBase64() ?? null, reset }));
+  const readColors = async (point?:{x:number;y:number}):Promise<string[]> => {
+    const image = await canvas.current?.makeImageSnapshotAsync();
+    if (!image) return [];
+    const pixels = image.readPixels(0,0);
+    if (!pixels) return [];
+    const w=image.width(), h=image.height();
+    const colorAt=(x:number,y:number)=>{
+      const idx=(Math.min(h-1,Math.max(0,y))*w+Math.min(w-1,Math.max(0,x)))*4;
+      const r=pixels[idx],g=pixels[idx+1],b=pixels[idx+2];
+      return `#${[r,g,b].map(v=>Math.round(v).toString(16).padStart(2,'0')).join('')}`;
+    };
+    if(point) return [colorAt(Math.floor(point.x*w/sizeRef.current.width),Math.floor(point.y*h/sizeRef.current.height))];
+    const buckets=new Map<string,{n:number;r:number;g:number;b:number}>();
+    for(let y=Math.floor(h*.08);y<h*.92;y+=Math.max(1,Math.floor(h/45)))for(let x=Math.floor(w*.08);x<w*.92;x+=Math.max(1,Math.floor(w/45))){
+      const idx=(y*w+x)*4;const r=pixels[idx],g=pixels[idx+1],b=pixels[idx+2];
+      if(pixels[idx+3]<120)continue;
+      const key=`${r>>5}-${g>>5}-${b>>5}`;
+      const a=buckets.get(key)??{n:0,r:0,g:0,b:0};a.n++;a.r+=r;a.g+=g;a.b+=b;buckets.set(key,a);
+    }
+    return [...buckets.values()].sort((a,b)=>b.n-a.n).slice(0,12).map(a=>`#${[a.r/a.n,a.g/a.n,a.b/a.n].map(v=>Math.round(v).toString(16).padStart(2,'0')).join('')}`);
+  };
+  const preparePicker = async () => {
+    pickerCache.current=null;pickerColorRef.current=null;
+    const token=++pickerToken.current;
+    const shot=await canvas.current?.makeImageSnapshotAsync();
+    const pixels=shot?.readPixels(0,0);
+    if(token===pickerToken.current && shot && pixels)pickerCache.current={pixels,width:shot.width(),height:shot.height()};
+  };
+  const samplePicker = (x:number,y:number,force=false) => {
+    if(!force && Date.now()-lastPickerSample.current<45)return;
+    lastPickerSample.current=Date.now();
+    const cache=pickerCache.current;
+    if(!cache)return;
+    const px=Math.min(cache.width-1,Math.max(0,Math.floor(x*cache.width/sizeRef.current.width)));
+    const py=Math.min(cache.height-1,Math.max(0,Math.floor(y*cache.height/sizeRef.current.height)));
+    const i=(py*cache.width+px)*4;
+    const color='#'+[cache.pixels[i],cache.pixels[i+1],cache.pixels[i+2]].map(v=>Math.round(v).toString(16).padStart(2,'0')).join('');
+    pickerColorRef.current=color;setPickerHud({x,y,color});
+  };
+  const finishPicker = (x:number,y:number) => {
+    const color=pickerColorRef.current;
+    pickerColorRef.current=null;
+    setPickerHud(null);pickerCache.current=null;pickerToken.current++;
+    if(color)onPickRef.current?.(color);
+    else void readColors({x,y}).then(cs=>{if(cs[0])onPickRef.current?.(cs[0]);});
+  };
+  useImperativeHandle(ref, () => ({ snapshotBase64: async () => { const doc = useEditorStore.getState().document; return doc ? renderDocumentBase64(doc) : null; }, sampleColors:()=>readColors(), reset }));
 
   // One finger edits the selected object (or paints). Two fingers always navigate
   // the camera: midpoint translation + pinch zoom, independent of selected layer.
@@ -266,9 +436,14 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     setViewport(next);
   };
   const gesture = useMemo(() => {
+    const pickerGesture = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(0)
+      .onStart(e=>{void preparePicker().then(()=>samplePicker(e.x,e.y,true));})
+      .onUpdate(e=>samplePicker(e.x,e.y))
+      .onEnd(e=>finishPicker(e.x,e.y))
+      .onFinalize(()=>{setPickerHud(null);});
     const oneFinger = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(mode === 'brush' || mode === 'mask' ? 0 : 2)
-      .onStart(e => begin(e.x - e.translationX, e.y - e.translationY))
-      .onUpdate(e => mode === 'brush' || mode === 'mask' ? drawAt(e.x, e.y) : drag(e.translationX, e.translationY))
+      .onStart(e => { if(mode !== 'eyedropper')begin(e.x - e.translationX, e.y - e.translationY); })
+      .onUpdate(e => { if(mode !== 'eyedropper') mode === 'brush' || mode === 'mask' ? drawAt(e.x, e.y) : drag(e.translationX, e.translationY); })
       .onFinalize(end);
     const twoFinger = Gesture.Pan().runOnJS(true).minPointers(2).averageTouches(true)
       .onStart(() => cameraStart())
@@ -278,8 +453,8 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       .onStart(() => cameraStart())
       .onUpdate(e => cameraUpdate({ scale: e.scale }))
       .onFinalize(() => { camera.current = null; });
-    const tap = Gesture.Tap().runOnJS(true).onEnd(e => { if (mode !== 'brush') { begin(e.x, e.y); end(); } });
-    return Gesture.Race(Gesture.Simultaneous(twoFinger, pinchGesture), oneFinger, tap);
+    const tap = Gesture.Tap().runOnJS(true).onEnd(e => { if (mode === 'eyedropper') { void readColors({x:e.x,y:e.y}).then(cs=>{if(cs[0])onPickRef.current?.(cs[0]);}); } else if (mode !== 'brush') { begin(e.x, e.y); end(); } });
+    return mode==='eyedropper' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),pickerGesture) : Gesture.Race(Gesture.Simultaneous(twoFinger, pinchGesture), oneFinger, tap);
   }, [mode, document.width, document.height]);
 
   return <GestureDetector gesture={gesture}>
@@ -288,11 +463,15 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
         <Group origin={{ x: size.width / 2, y: size.height / 2 }} transform={[{ translateX: viewport.x }, { translateY: viewport.y }, { scale: viewport.zoom }, { rotate: viewport.rotation }]}>
           <Group transform={[{ translateX: offsetX }, { translateY: offsetY }, { scale: fit }]}>
             <Rect x={0} y={0} width={document.width} height={document.height} color="#ffffff" />
-            {document.layers.map(layer => <React.Fragment key={layer.id}><LayerContent layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} previewMask={mode === 'mask' && layer.id === document.selectedId ? previewMask : null} />{mode === 'brush' && previewStroke && layer.id === document.selectedId && layer.type === 'paint' && <Group transform={[{ translateX: layer.x + layer.width/2 }, { translateY: layer.y + layer.height/2 }, { rotate: layer.rotation }, { translateX: -layer.width/2 }, { translateY: -layer.height/2 }]}><StrokeShape stroke={previewStroke} /></Group>}</React.Fragment>)}
+            {document.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} previewMask={mode === 'mask' && layer.id === document.selectedId ? previewMask : null} previewStroke={mode === 'brush' && layer.id === document.selectedId ? previewStroke : null} cropPreview={cropPreview} />)}
           </Group>
         </Group>
       </Canvas>
+      {mode==='eyedropper' && pickerHud && <View pointerEvents="none" style={[styles.pickerHud,{left:Math.max(8,Math.min(size.width-164,pickerHud.x-72)),top:Math.max(8,pickerHud.y-125)}]}>
+        <View style={[styles.pickerLens,{backgroundColor:pickerHud.color}]}><View style={styles.pickerCross}/></View>
+        <View style={styles.pickerReadout}><View style={[styles.pickerSwatch,{backgroundColor:pickerHud.color}]}/><Text style={styles.pickerHex}>{pickerHud.color.toUpperCase()}</Text></View>
+      </View>}
     </View>
   </GestureDetector>;
 });
-const styles = StyleSheet.create({ root: { flex: 1, backgroundColor: '#17191f', overflow: 'hidden' } });
+const styles = StyleSheet.create({ root: { flex: 1, backgroundColor: '#17191f', overflow: 'hidden' },pickerHud:{position:'absolute',width:156,alignItems:'center',gap:7},pickerLens:{width:76,height:76,borderRadius:38,borderWidth:5,borderColor:'#fff',alignItems:'center',justifyContent:'center',shadowColor:'#000',shadowOpacity:.55,shadowRadius:8},pickerCross:{width:12,height:12,borderWidth:1.5,borderColor:'#fff',borderRadius:6},pickerReadout:{backgroundColor:'#101010',borderRadius:18,paddingVertical:7,paddingHorizontal:12,flexDirection:'row',alignItems:'center',gap:8},pickerSwatch:{width:20,height:20,borderRadius:10,borderWidth:1,borderColor:'#fff'},pickerHex:{color:'#fff',fontWeight:'700',fontSize:12} });
