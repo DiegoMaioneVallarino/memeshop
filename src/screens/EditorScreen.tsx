@@ -227,6 +227,18 @@ export function EditorScreen() {
     if(next==='layers'){setLayersOpen(v=>!v);setTool(null);return;}
     if(next==='stickers'){setStickersOpen(true);setTool(null);return;}
     if(next==='images'){void importImage(false);return;}
+    // Un toque en Texto crea la capa y abre sus controles inmediatamente.
+    // Si ya estamos editando una capa de texto, el mismo botón cierra el panel.
+    if(next==='text'){
+      setLayersOpen(false);
+      if(tool==='text'){setTool(null);return;}
+      const active=useEditorStore.getState().document;
+      const current=active?.layers.find(l=>l.id===active.selectedId);
+      if(current?.type!=='text')addText();
+      setTextTab('Fuente');
+      setTool('text');
+      return;
+    }
     setLayersOpen(false);setTool(t=>t===next?null:next);
   };
   const insertSticker=async(asset:StickerAsset)=>{
@@ -309,7 +321,7 @@ export function EditorScreen() {
     <EditorHeader editing={editing} applyEdit={acceptAction} cancelEdit={discardAction} back={()=>{void goHome();}} undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} exportImage={exportPreview} busy={busy} eraseImage={document && selected?.type==='image' ? ()=>{setMaskMode('erase');setTool('mask');setLayersOpen(false);} : undefined} eraseActive={tool==='mask'} removeBackground={document && selected?.type==='image' ? ()=>{void removeBackground();} : undefined} removeBackgroundBusy={bgWorking}/>
     <View style={styles.workspace}>{document?<PhotoCanvas key={`${document.width}-${document.height}`} ref={canvas} document={document} gpuWand={tool==='wand' ? gpuWand : null} mode={pickingColor?'eyedropper':tool==='brush'?'brush':tool==='mask'?'mask':tool==='wand'?'wand':'layer'} cropPreview={cropPreview} onWandPick={(x,y)=>void applyWand(x,y)} onPickColor={color=>{setBrushColor(color);setEraser(false);setPickingColor(false);setTool('brush');}} brush={{color:brushColor,size:brushSize,eraser,opacity:tool==='mask'?maskOpacity/100:brushOpacity/100,hardness:(tool==='mask'?maskHardness:brushHardness)/100,spread:tool==='mask'?maskSpread:brushSpread,restore:maskMode==='restore'}}/>:<View style={styles.empty}><Feather name="image" size={48} color="#aaa"/><Text style={styles.emptyTitle}>Comienza a crear</Text><MiniButton label="Elegir imagen" onPress={()=>importImage(true)}/></View>}{document && layersOpen && <LayersDrawer document={document} onClose={()=>setLayersOpen(false)}/>}</View>
     
-    {document && tool && <View style={styles.sheetContainer}><Sheet title={{tools:'Herramientas',adjust:'Ajustes de imagen',brush:'Pincel',mask:'Borrar / restaurar',layers:'Capas',add:'Añadir elemento',transform:'Transformar capa',effects:'Efectos',crop:'Recortar',rotate:'Rotar',perspective:'Perspectiva',wand:'Varita mágica',text:'Texto',stickers:'Stickers',images:'Imágenes'}[tool]} onClose={()=>setTool(null)}>
+    {document && tool && <View style={[styles.sheetContainer,tool==='text'&&styles.textFloating]}><Sheet title={{tools:'Herramientas',adjust:'Ajustes de imagen',brush:'Pincel',mask:'Borrar / restaurar',layers:'Capas',add:'Añadir elemento',transform:'Transformar capa',effects:'Efectos',crop:'Recortar',rotate:'Rotar',perspective:'Perspectiva',wand:'Varita mágica',text:'Texto',stickers:'Stickers',images:'Imágenes'}[tool]} onClose={()=>setTool(null)}>
       {tool==='wand' && <View style={{paddingHorizontal:12,paddingBottom:12,gap:6}}>
         <Text style={styles.help}>Toca el fondo. Global: quita todo lo que tenga ese color. Contiguo: solo la zona conectada al toque.</Text>
         <Text style={styles.field}>Tolerancia · {wandTolerance}%</Text>
@@ -322,15 +334,13 @@ export function EditorScreen() {
         <MiniButton label="Restablecer fondo" onPress={resetWand}/>
       </View>}
       {tool==='text' && <View style={styles.panel}>
-        {selected?.type !== 'text' ? <>
-          <Text style={styles.help}>Añade una capa de texto independiente. Puedes moverla, girarla, duplicarla y editarla después.</Text>
-          <Pressable onPress={addText} style={styles.textPrimary}><Feather name="type" size={18} color="#062208"/><Text style={styles.textPrimaryLabel}>Añadir texto</Text></Pressable>
-        </> : <>
-          <View style={styles.row}><Text style={styles.field}>Contenido</Text><MiniButton label="+ Otro texto" onPress={addText}/></View>
-          <TextInput multiline value={selected.text} onChangeText={v=>update(selected.id,{text:v,name:v.split('\n')[0].slice(0,28)||'Texto'} as any)} placeholder="Escribe tu texto" placeholderTextColor="#777" style={styles.textInput}/>
+        {selected?.type !== 'text' ? <Text style={styles.help}>Selecciona una capa de texto.</Text> : <>
+          <View style={[styles.row,{justifyContent:'space-between'}]}><Text style={styles.field}>Texto</Text><MiniButton label="+ Nuevo" onPress={addText}/></View>
+          <TextInput multiline value={selected.text} onChangeText={v=>update(selected.id,{text:v,name:v.split('\n')[0].slice(0,28)||'Texto'} as any)} placeholder="Escribe tu texto" placeholderTextColor="#777" style={[styles.textInput,styles.textInputCompact]}/>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:8,paddingVertical:6}}>
-            {(['Fuente','Trazo','Color','Resaltador','Sombra'] as const).map((tab)=><Pressable key={tab} onPress={()=>setTextTab(tab)} style={{paddingHorizontal:13,paddingVertical:10,borderRadius:18,backgroundColor:textTab===tab?'#18e500':'#282828'}}><Text style={{color:textTab===tab?'#061b09':'#eee',fontWeight:'700'}}>{tab}</Text></Pressable>)}
+            {(['Fuente','Trazo','Color','Resaltador','Sombra'] as const).map((tab)=><Pressable key={tab} onPress={()=>setTextTab(tab)} style={{paddingHorizontal:11,paddingVertical:6,borderRadius:15,backgroundColor:textTab===tab?'#18e500':'#282828'}}><Text style={{color:textTab===tab?'#061b09':'#eee',fontWeight:'700'}}>{tab}</Text></Pressable>)}
           </ScrollView>
+          <ScrollView style={{maxHeight:95}} nestedScrollEnabled keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom:8}}>
           {textTab==='Fuente' && <>
             <Text style={styles.field}>Tipografía</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:9}}>
@@ -363,7 +373,7 @@ export function EditorScreen() {
             <Text style={styles.field}>Color de sombra</Text>
             <View style={styles.row}>{['#000000','#ffffff','#18e500','#ff304f','#25c5ff'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{shadowColor:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.shadowColor===c?'#18e500':'#666',borderWidth:3}]}/>)}</View>
           </>}
-          <Text style={styles.help}>Para mover o redimensionar el texto, aplica los cambios y selecciona la capa en el lienzo.</Text>
+          </ScrollView>
         </>}
       </View>}
       {tool==='effects' && <View style={{paddingBottom:16}}>
@@ -402,4 +412,4 @@ export function EditorScreen() {
     {(busy||imageLoading||bgWorking)&&<ActivityIndicator color="#19e500" style={styles.busy}/>}
   </SafeAreaView>;
 }
-const styles=StyleSheet.create({root:{flex:1,backgroundColor:'#101010'},headerWrap:{position:'relative',zIndex:5},topEraser:{position:'absolute',right:105,top:11,alignItems:'center',justifyContent:'center',padding:5,borderRadius:9,minWidth:50},topEraserActive:{backgroundColor:'#5c2658'},topEraserText:{color:'#fff',fontSize:10},workspace:{flex:1,backgroundColor:'#1a1a1a'},empty:{flex:1,alignItems:'center',justifyContent:'center',gap:20},emptyTitle:{color:'#fff',fontSize:22,fontWeight:'600'},sheetContainer:{maxHeight:'49%'},grid:{flexDirection:'row',flexWrap:'wrap'},panel:{gap:12,paddingBottom:8},row:{flexDirection:'row',alignItems:'center',flexWrap:'wrap',gap:9},mini:{backgroundColor:'#303030',paddingHorizontal:13,paddingVertical:10,borderRadius:9},miniText:{color:'#fff',fontSize:12,fontWeight:'600'},field:{color:'#ddd',fontSize:13,minWidth:75},value:{color:'#ccc',fontSize:12},help:{color:'#aaa',fontSize:12},swatch:{height:30,width:30,borderRadius:15,borderWidth:3},layers:{maxHeight:260},layer:{flexDirection:'row',alignItems:'center',gap:10,padding:8,borderRadius:10},layerActive:{backgroundColor:'#42303e'},layerName:{flex:1,color:'#fff',fontSize:13},busy:{position:'absolute',top:80,alignSelf:'center'},pickerBanner:{backgroundColor:'#342137',padding:12,alignItems:'center'},textPrimary:{backgroundColor:'#18e500',padding:13,borderRadius:12,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:8},textPrimaryLabel:{color:'#062208',fontWeight:'800'},textInput:{color:'#fff',backgroundColor:'#292929',borderRadius:10,borderWidth:1,borderColor:'#555',padding:12,minHeight:72,textAlignVertical:'top',fontSize:17},textSwatch:{width:31,height:31,borderRadius:16},maskShortcut:{position:'absolute',top:8,right:15,backgroundColor:'#29212d',borderRadius:18,paddingHorizontal:12,paddingVertical:9,flexDirection:'row',alignItems:'center',gap:6,borderWidth:1,borderColor:'#c343b7'}});
+const styles=StyleSheet.create({root:{flex:1,backgroundColor:'#101010'},headerWrap:{position:'relative',zIndex:5},topEraser:{position:'absolute',right:105,top:11,alignItems:'center',justifyContent:'center',padding:5,borderRadius:9,minWidth:50},topEraserActive:{backgroundColor:'#5c2658'},topEraserText:{color:'#fff',fontSize:10},workspace:{flex:1,backgroundColor:'#1a1a1a'},empty:{flex:1,alignItems:'center',justifyContent:'center',gap:20},emptyTitle:{color:'#fff',fontSize:22,fontWeight:'600'},sheetContainer:{maxHeight:'49%'},textFloating:{position:'absolute',bottom:73,left:0,right:0,zIndex:10,maxHeight:215,backgroundColor:'#191919',borderTopLeftRadius:16,borderTopRightRadius:16,overflow:'hidden'},grid:{flexDirection:'row',flexWrap:'wrap'},panel:{gap:12,paddingBottom:8},row:{flexDirection:'row',alignItems:'center',flexWrap:'wrap',gap:9},mini:{backgroundColor:'#303030',paddingHorizontal:13,paddingVertical:10,borderRadius:9},miniText:{color:'#fff',fontSize:12,fontWeight:'600'},field:{color:'#ddd',fontSize:13,minWidth:75},value:{color:'#ccc',fontSize:12},help:{color:'#aaa',fontSize:12},swatch:{height:30,width:30,borderRadius:15,borderWidth:3},layers:{maxHeight:260},layer:{flexDirection:'row',alignItems:'center',gap:10,padding:8,borderRadius:10},layerActive:{backgroundColor:'#42303e'},layerName:{flex:1,color:'#fff',fontSize:13},busy:{position:'absolute',top:80,alignSelf:'center'},pickerBanner:{backgroundColor:'#342137',padding:12,alignItems:'center'},textPrimary:{backgroundColor:'#18e500',padding:13,borderRadius:12,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:8},textPrimaryLabel:{color:'#062208',fontWeight:'800'},textInput:{color:'#fff',backgroundColor:'#292929',borderRadius:10,borderWidth:1,borderColor:'#555',padding:12,minHeight:72,textAlignVertical:'top',fontSize:17},textInputCompact:{minHeight:36,maxHeight:44,paddingVertical:5,paddingHorizontal:10,fontSize:15},textSwatch:{width:26,height:26,borderRadius:13},maskShortcut:{position:'absolute',top:8,right:15,backgroundColor:'#29212d',borderRadius:18,paddingHorizontal:12,paddingVertical:9,flexDirection:'row',alignItems:'center',gap:6,borderWidth:1,borderColor:'#c343b7'}});
