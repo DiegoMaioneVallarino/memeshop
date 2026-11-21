@@ -1,0 +1,6 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <application>
+    <!-- Pide a Google Play services que descargue el modelo al instalar la app (evita la espera la primera vez). -->
+    <meta-data android:name="com.google.mlkit.vision.DEPENDENCIES" android:value="subject_segment" />
+  </application>
+</manifest>

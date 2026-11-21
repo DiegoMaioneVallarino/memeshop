@@ -6,12 +6,13 @@ const palette = { bg: '#101010', panel: '#191919', text: '#f5f5f5', muted: '#a9a
 export function IconAction({ icon, label, onPress, active, disabled }: { icon: React.ComponentProps<typeof Feather>['name']; label?: string; onPress: () => void; active?: boolean; disabled?: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label || icon} onPress={onPress} disabled={disabled} style={[styles.action, active && styles.active, disabled && {opacity: .3}]}><Feather name={icon} size={23} color={active ? palette.accent : palette.text}/>{label ? <Text numberOfLines={1} style={[styles.label, active && {color:palette.accent}]}>{label}</Text> : null}</Pressable>;
 }
-export function EditorHeader({ undo, redo, canUndo, canRedo, exportImage, back, busy, eraseImage, eraseActive, editing, applyEdit, cancelEdit }: { eraseImage?:()=>void; eraseActive?:boolean; undo:()=>void; redo:()=>void; canUndo:boolean; canRedo:boolean; exportImage:()=>void; back:()=>void; busy:boolean; editing?:boolean; applyEdit?:()=>void; cancelEdit?:()=>void }) {
+export function EditorHeader({ undo, redo, canUndo, canRedo, exportImage, back, busy, eraseImage, eraseActive, editing, applyEdit, cancelEdit, removeBackground, removeBackgroundBusy }: { removeBackground?:()=>void; removeBackgroundBusy?:boolean; eraseImage?:()=>void; eraseActive?:boolean; undo:()=>void; redo:()=>void; canUndo:boolean; canRedo:boolean; exportImage:()=>void; back:()=>void; busy:boolean; editing?:boolean; applyEdit?:()=>void; cancelEdit?:()=>void }) {
   return <View style={styles.header}>
     <IconAction icon={editing?'x':'arrow-left'} onPress={editing ? ()=>cancelEdit?.() : back} label={editing?'Cancelar':'Atrás'}/>
     <View style={styles.headerCenter}>
       {!editing && <><IconAction icon="corner-up-left" onPress={undo} disabled={!canUndo}/><IconAction icon="corner-up-right" onPress={redo} disabled={!canRedo}/></>}
       {eraseImage && !editing && <IconAction icon="delete" label="Goma" onPress={eraseImage} active={eraseActive}/>}
+      {removeBackground && !editing && <IconAction icon="scissors" label="Quitar fondo" onPress={removeBackground} disabled={removeBackgroundBusy}/>}
     </View>
     <Pressable onPress={editing ? applyEdit : exportImage} disabled={busy} style={{paddingHorizontal:12,paddingVertical:10,backgroundColor:editing?'#1b7e27':'transparent',borderRadius:10}}>
       <Text style={styles.export}>{busy?'Procesando…':editing?'✓ Aplicar':'Exportar'}</Text>

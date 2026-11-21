@@ -1,11 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as FileSystem from 'expo-file-system/legacy';
 import type { EditorDocument } from '../types/editor';
+import { materializeMasks } from './maskStore';
 const KEY='memeshop.projects.v1';
 const ASSETS_DIR='memeshop-assets/';
 export type SavedProject={id:string;name:string;updatedAt:number;thumbnail?:string;document:EditorDocument};
 export async function listProjects():Promise<SavedProject[]> {try {return JSON.parse(await AsyncStorage.getItem(KEY)||'[]');}catch{return [];}}
-export async function persistProject(project:SavedProject){const projects=await listProjects();const next=[project,...projects.filter(p=>p.id!==project.id)].sort((a,b)=>b.updatedAt-a.updatedAt);await AsyncStorage.setItem(KEY,JSON.stringify(next));}
+export async function persistProject(input:SavedProject){
+ // Las máscaras que solo viven en memoria se escriben aquí (una vez) dentro de memeshop-assets/, donde pruneAssets() las gestiona.
+ const project={...input,document:await materializeMasks(input.document)};
+ const projects=await listProjects();const next=[project,...projects.filter(p=>p.id!==project.id)].sort((a,b)=>b.updatedAt-a.updatedAt);await AsyncStorage.setItem(KEY,JSON.stringify(next));}
 export async function deleteProject(id:string){await AsyncStorage.setItem(KEY,JSON.stringify((await listProjects()).filter(p=>p.id!==id)));}
 // Keeps the original extension (png/webp/jpg) instead of forcing .png on everything.
 export async function durableImage(uri:string):Promise<string>{
@@ -62,4 +66,27 @@ export async function detachLibraryAssets(doc:EditorDocument):Promise<{document:
   layers.push(l);
  }
  return {document:changed?{...doc,layers}:doc,changed};
+}
+/**
+ * Versiones anteriores escribían cada máscara de la varita en la RAÍZ de documentDirectory (memeshop-wand-*.png, ~3 MB sin comprimir)
+ * y pruneAssets() nunca las veía. Las que un proyecto todavía usa se copian a memeshop-assets/; el resto se borra.
+ * Se ejecuta una vez al arrancar, antes de listar proyectos. Si algo falla no borra nada.
+ */
+export async function migrateLegacyMasks():Promise<void>{
+ try{
+  const root=FileSystem.documentDirectory;if(!root)return;
+  const legacy=(await FileSystem.readDirectoryAsync(root)).filter(n=>/^memeshop-wand-.*\.png$/.test(n));
+  if(!legacy.length)return;
+  const raw=await AsyncStorage.getItem(KEY);
+  const projects:SavedProject[]=raw?JSON.parse(raw):[]; // si el JSON está roto, lanza y no se borra nada
+  const names=new Set(legacy);let changed=false;
+  for(const p of projects)for(const l of p.document.layers){
+   if(l.type!=='image'||!l.magicMaskUri)continue;
+   const name=baseName(l.magicMaskUri);
+   if(!names.has(name))continue;
+   l.magicMaskUri=await durableImage(root+name);changed=true;
+  }
+  if(changed)await AsyncStorage.setItem(KEY,JSON.stringify(projects));
+  for(const n of legacy)await FileSystem.deleteAsync(root+n,{idempotent:true});
+ }catch(e){console.warn('migrateLegacyMasks',e);}
 }

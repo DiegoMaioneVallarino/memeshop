@@ -2,8 +2,10 @@ import { createMagicMask } from '../services/magicWand';
 import React, { useRef, useState, useEffect } from 'react';
 import { ActivityIndicator, Alert, Share, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, Image, useWindowDimensions } from 'react-native';
 import { ProjectsHome } from './ProjectsHome';
-import { listProjects, persistProject, deleteProject, durableImage, pruneAssets, detachLibraryAssets, type SavedProject } from '../services/projects';
-import { cropAndStraighten } from '../services/imageCrop';
+import { listProjects, persistProject, deleteProject, durableImage, pruneAssets, detachLibraryAssets, migrateLegacyMasks, type SavedProject } from '../services/projects';
+import { clearMasks, loadMaskImage, registerMask, releaseMask } from '../services/maskStore';
+import { removeBackgroundAuto } from '../services/subject';
+import { cropAndStraighten, cropMaskImage } from '../services/imageCrop';
 import { CropPanel } from '../components/editor/CropPanel';
 import { cropRect, cropLocalAngle, croppedGeometry, initialCrop, isCropNoop, pixelRect, type CropState } from '../utils/crop';
 import { BrushControls } from '../components/editor/BrushControls';
@@ -38,6 +40,8 @@ export function EditorScreen() {
   const [wandLayerId,setWandLayerId]=useState<string|null>(null);
   const [wandWorking,setWandWorking]=useState(false);
   const [gpuWand,setGpuWand]=useState<{layerId:string;x:number;y:number;tolerance:number;feather:number}|null>(null);
+  const [bgWorking,setBgWorking]=useState(false);
+  const wandSessionKey=useRef<string|null>(null); // máscara creada en la sesión de varita actual (se reemplaza en cada tick)
   const wandSequence=useRef(0);
   const wandTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const wandPointRef=useRef<{x:number;y:number}|null>(null);
@@ -50,7 +54,7 @@ export function EditorScreen() {
   useEffect(()=>{
     let alive=true;
     const start=Date.now();
-    void listProjects().then(items=>{if(alive)setProjects(items);}).catch(e=>console.warn('Proyectos:',e)).finally(()=>{
+    void migrateLegacyMasks().then(()=>listProjects()).then(items=>{if(alive)setProjects(items);}).catch(e=>console.warn('Proyectos:',e?.stack??e)).finally(()=>{
       const delay=Math.max(0,650-(Date.now()-start));
       setTimeout(()=>{if(alive)setBooting(false);},delay);
     });
@@ -58,11 +62,11 @@ export function EditorScreen() {
   },[]);
   useEffect(()=>{
     if(home||!document||!projectId)return;
-    const timeout=setTimeout(()=>{void persistProject({id:projectId,name:projectName,updatedAt:Date.now(),document}).then(()=>listProjects().then(setProjects));},1200);
+    const timeout=setTimeout(()=>{void persistProject({id:projectId,name:projectName,updatedAt:Date.now(),document}).then(()=>listProjects().then(setProjects)).catch(e=>console.warn('Autoguardado:',e?.stack??e));},1200);
     return ()=>clearTimeout(timeout);
   },[document,projectId,projectName,home]);
-  const openProject=async(p:SavedProject)=>{let doc=p.document;try{doc=(await detachLibraryAssets(doc)).document;}catch(e){console.warn(e);}useEditorStore.setState({document:doc,past:[],future:[],editBaseline:null});setProjectId(p.id);setProjectName(p.name);setTool(null);setHome(false);};
-  const newProject=()=>{useEditorStore.getState().resetDocument();setProjectId(String(Date.now()));setProjectName('Proyecto sin título');setHome(false);setTool(null);};
+  const openProject=async(p:SavedProject)=>{let doc=p.document;try{doc=(await detachLibraryAssets(doc)).document;}catch(e){console.warn(e);}clearMasks();useEditorStore.setState({document:doc,past:[],future:[],editBaseline:null});setProjectId(p.id);setProjectName(p.name);setTool(null);setHome(false);};
+  const newProject=()=>{clearMasks();useEditorStore.getState().resetDocument();setProjectId(String(Date.now()));setProjectName('Proyecto sin título');setHome(false);setTool(null);};
   const goHome=async()=>{if(document&&projectId){await persistProject({id:projectId,name:projectName,updatedAt:Date.now(),document});setProjects(await listProjects());void pruneAssets();}setTool(null);setHome(true);};
 
   const setPhoto = useEditorStore(s=>s.setPhoto), addImage=useEditorStore(s=>s.addImage), addShape=useEditorStore(s=>s.addShape), addPaint=useEditorStore(s=>s.addPaint);
@@ -92,11 +96,11 @@ export function EditorScreen() {
   useEffect(()=>{
     if (!home && document && tool && actionTools.includes(tool)) beginEdit();
   },[tool,home,!!document]);
-  const acceptAction=()=>{finishEdit();setGpuWand(null);setTool(null);};
-  const discardAction=()=>{wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);cancelEdit();setGpuWand(null);setWandPoint(null);setTool(null);};
+  const acceptAction=()=>{finishEdit();wandSessionKey.current=null;setGpuWand(null);setTool(null);};
+  const discardAction=()=>{wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);cancelEdit();releaseMask(wandSessionKey.current);wandSessionKey.current=null;setGpuWand(null);setWandPoint(null);setTool(null);};
   const selected=document?.layers.find(l=>l.id===document.selectedId);
   useEffect(()=>{if(tool!=='crop'&&tool!=='rotate'&&tool!=='perspective')setCrop(initialCrop);},[tool]);
-  useEffect(()=>{setCrop(initialCrop);wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);wandPointRef.current=null;wandLayerRef.current=null;setWandPoint(null);setWandLayerId(null);setWandWorking(false);setGpuWand(null);},[document?.selectedId]);
+  useEffect(()=>{wandSessionKey.current=null;setCrop(initialCrop);wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);wandPointRef.current=null;wandLayerRef.current=null;setWandPoint(null);setWandLayerId(null);setWandWorking(false);setGpuWand(null);},[document?.selectedId]);
   const cropImage=selected?.type==='image'?selected:null;
   const cropPreview=tool==='crop'&&cropImage?{layerId:cropImage.id,rect:cropRect(crop,cropImage.width,cropImage.height,!!cropImage.flipX),angle:cropLocalAngle(crop,!!cropImage.flipX)}:null;
   async function importImage(replace=false) {
@@ -151,23 +155,17 @@ export function EditorScreen() {
     try{
       uri=await createMagicMask(layer.uri,x,y,wandSettingsRef.current);
       if(sequence!==wandSequence.current || wandLayerRef.current!==layerId){
-        await FileSystem.deleteAsync(uri,{idempotent:true});return;
+        releaseMask(uri);return;
       }
-      // Preserve old mask files for undo; project asset cleanup handles obsolete assets.
+      // Dentro de la edición los ticks intermedios no entran al historial (hay editBaseline), así que se liberan.
+      const previous=wandSessionKey.current;
       useEditorStore.getState().update(layerId,{magicMaskUri:uri});
+      wandSessionKey.current=uri;
+      if(previous)releaseMask(previous);
     }catch(e){if(sequence===wandSequence.current)Alert.alert('Varita mágica',String(e));}
     finally{if(sequence===wandSequence.current)setWandWorking(false);}
   };
-  const scheduleWand=(x:number,y:number,layerId:string,delay=160)=>{
-    if(!wandSettingsRef.current.contiguous){
-      wandSequence.current++;
-      if(wandTimer.current)clearTimeout(wandTimer.current);
-      wandPointRef.current={x,y};wandLayerRef.current=layerId;
-      setWandPoint({x,y});setWandLayerId(layerId);
-      setGpuWand({layerId,x,y,tolerance:wandSettingsRef.current.tolerance,feather:wandSettingsRef.current.feather});
-      setWandWorking(false);
-      return;
-    }
+  const scheduleWand=(x:number,y:number,layerId:string,delay=40)=>{
     setGpuWand(null);
     wandPointRef.current={x,y};wandLayerRef.current=layerId;
     setWandPoint({x,y});setWandLayerId(layerId);
@@ -182,12 +180,13 @@ export function EditorScreen() {
   useEffect(()=>{
     wandSettingsRef.current={tolerance:wandTolerance,feather:wandFeather,contiguous:wandContiguous};
     const point=wandPointRef.current,layerId=wandLayerRef.current;
-    if(point&&layerId&&tool==='wand')scheduleWand(point.x,point.y,layerId,180);
+    if(point&&layerId&&tool==='wand')scheduleWand(point.x,point.y,layerId,60);
   },[wandTolerance,wandFeather,wandContiguous]);
   useEffect(()=>()=>{wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);},[]);
   const resetWand=()=>{
     wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);
     if(selected?.type==='image')update(selected.id,{magicMaskUri:undefined});
+    releaseMask(wandSessionKey.current);wandSessionKey.current=null;
     setGpuWand(null);
     wandPointRef.current=null;wandLayerRef.current=null;setWandPoint(null);setWandLayerId(null);setWandWorking(false);
   };
@@ -278,10 +277,26 @@ export function EditorScreen() {
       const uri=await durableImage(tmp);
       // Content stays in place; mask strokes are re-expressed in the new image's coordinates.
       const g=croppedGeometry(l,frac,angle);
-      update(l.id,{uri,sourceWidth:outW,sourceHeight:outH,x:g.x,y:g.y,width:g.width,height:g.height,maskStrokes:g.maskStrokes} as any);
+      // La máscara de la varita/quitafondos cubre toda la imagen: se recorta con la misma transformación para que no se desalinee.
+      let magicMaskUri=l.magicMaskUri;
+      if(magicMaskUri){const m=await loadMaskImage(magicMaskUri);if(m)magicMaskUri=registerMask(cropMaskImage(m,l.width,l.height,frac,angle));}
+      update(l.id,{uri,sourceWidth:outW,sourceHeight:outH,x:g.x,y:g.y,width:g.width,height:g.height,maskStrokes:g.maskStrokes,magicMaskUri} as any);
       // The previous file is not deleted here: undo still needs it. pruneAssets() removes it once the project is closed.
       setTool(null);setCrop(initialCrop);
     }catch(e){Alert.alert('Error de recorte',String(e));}finally{setBusy(false);}
+  };
+  const removeBackground=async()=>{
+    if(!selected||selected.type!=='image'){Alert.alert('Quitar fondo','Selecciona una capa de imagen.');return;}
+    if(bgWorking)return;
+    const layer=selected;
+    setBgWorking(true);
+    try{
+      const r=await removeBackgroundAuto(layer.uri);
+      if(!useEditorStore.getState().document?.layers.some(l=>l.id===layer.id)){releaseMask(r.key);return;}
+      // Un solo paso de historial (no hay edición abierta): deshacer devuelve el fondo. Los trazos de goma anteriores se descartan.
+      update(layer.id,{magicMaskUri:r.key,maskStrokes:undefined} as any);
+    }catch(e){Alert.alert('Quitar fondo',e instanceof Error?e.message:String(e));}
+    finally{setBgWorking(false);}
   };
   if(booting)return <View style={{flex:1,backgroundColor:'#071d08',alignItems:'center',justifyContent:'center'}}>
     <Image source={require('../assets/memeshop-logo.png')} style={{width:180,height:180,borderRadius:35}} resizeMode="contain" />
@@ -290,12 +305,12 @@ export function EditorScreen() {
   </View>;
   if(home)return <SafeAreaView style={{flex:1,backgroundColor:'white'}}><ProjectsHome projects={projects} onOpen={openProject} onCreate={newProject} onDelete={id=>{void deleteProject(id).then(()=>{void pruneAssets();return listProjects().then(setProjects);});}}/></SafeAreaView>;
   return <SafeAreaView style={styles.root}>
-    <EditorHeader editing={editing} applyEdit={acceptAction} cancelEdit={discardAction} back={()=>{void goHome();}} undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} exportImage={exportPreview} busy={busy} eraseImage={document && selected?.type==='image' ? ()=>{setMaskMode('erase');setTool('mask');setLayersOpen(false);} : undefined} eraseActive={tool==='mask'}/>
+    <EditorHeader editing={editing} applyEdit={acceptAction} cancelEdit={discardAction} back={()=>{void goHome();}} undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} exportImage={exportPreview} busy={busy} eraseImage={document && selected?.type==='image' ? ()=>{setMaskMode('erase');setTool('mask');setLayersOpen(false);} : undefined} eraseActive={tool==='mask'} removeBackground={document && selected?.type==='image' ? ()=>{void removeBackground();} : undefined} removeBackgroundBusy={bgWorking}/>
     <View style={styles.workspace}>{document?<PhotoCanvas key={`${document.width}-${document.height}`} ref={canvas} document={document} gpuWand={tool==='wand' ? gpuWand : null} mode={pickingColor?'eyedropper':tool==='brush'?'brush':tool==='mask'?'mask':tool==='wand'?'wand':'layer'} cropPreview={cropPreview} onWandPick={(x,y)=>void applyWand(x,y)} onPickColor={color=>{setBrushColor(color);setEraser(false);setPickingColor(false);setTool('brush');}} brush={{color:brushColor,size:brushSize,eraser,opacity:tool==='mask'?maskOpacity/100:brushOpacity/100,hardness:(tool==='mask'?maskHardness:brushHardness)/100,spread:tool==='mask'?maskSpread:brushSpread,restore:maskMode==='restore'}}/>:<View style={styles.empty}><Feather name="image" size={48} color="#aaa"/><Text style={styles.emptyTitle}>Comienza a crear</Text><MiniButton label="Elegir imagen" onPress={()=>importImage(true)}/></View>}{document && layersOpen && <LayersDrawer document={document} onClose={()=>setLayersOpen(false)}/>}</View>
     
     {document && tool && <View style={styles.sheetContainer}><Sheet title={{tools:'Herramientas',adjust:'Ajustes de imagen',brush:'Pincel',mask:'Borrar / restaurar',layers:'Capas',add:'Añadir elemento',transform:'Transformar capa',effects:'Efectos',crop:'Recortar',rotate:'Rotar',perspective:'Perspectiva',wand:'Varita mágica',text:'Texto',stickers:'Stickers',images:'Imágenes'}[tool]} onClose={()=>setTool(null)}>
       {tool==='wand' && <View style={{paddingHorizontal:12,paddingBottom:12,gap:6}}>
-        <Text style={styles.help}>Toca el fondo. Modo global: previsualización GPU instantánea. Modo contiguo: selección precisa por CPU.</Text>
+        <Text style={styles.help}>Toca el fondo. Global: quita todo lo que tenga ese color. Contiguo: solo la zona conectada al toque.</Text>
         <Text style={styles.field}>Tolerancia · {wandTolerance}%</Text>
         <Slider minimumValue={0} maximumValue={100} step={1} value={wandTolerance} onValueChange={setWandTolerance} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
         <Text style={styles.field}>Suavizado · {wandFeather}%</Text>
@@ -339,7 +354,7 @@ export function EditorScreen() {
     {pickingColor && <Pressable style={styles.pickerBanner} onPress={()=>{setPickingColor(false);setTool('brush');}}><Text style={{color:'white'}}>Mantén pulsado y arrastra el cuentagotas · Toca aquí para cancelar</Text></Pressable>}
     {document && <EditorToolbar active={layersOpen?'layers':tool} onSelect={choose}/>}
     {document && stickersOpen && <StickerLibrary onInsert={insertSticker} onClose={()=>setStickersOpen(false)}/>}
-    {(busy||imageLoading)&&<ActivityIndicator color="#19e500" style={styles.busy}/>}
+    {(busy||imageLoading||bgWorking)&&<ActivityIndicator color="#19e500" style={styles.busy}/>}
   </SafeAreaView>;
 }
 const styles=StyleSheet.create({root:{flex:1,backgroundColor:'#101010'},headerWrap:{position:'relative',zIndex:5},topEraser:{position:'absolute',right:105,top:11,alignItems:'center',justifyContent:'center',padding:5,borderRadius:9,minWidth:50},topEraserActive:{backgroundColor:'#5c2658'},topEraserText:{color:'#fff',fontSize:10},workspace:{flex:1,backgroundColor:'#1a1a1a'},empty:{flex:1,alignItems:'center',justifyContent:'center',gap:20},emptyTitle:{color:'#fff',fontSize:22,fontWeight:'600'},sheetContainer:{maxHeight:'49%'},grid:{flexDirection:'row',flexWrap:'wrap'},panel:{gap:12,paddingBottom:8},row:{flexDirection:'row',alignItems:'center',flexWrap:'wrap',gap:9},mini:{backgroundColor:'#303030',paddingHorizontal:13,paddingVertical:10,borderRadius:9},miniText:{color:'#fff',fontSize:12,fontWeight:'600'},field:{color:'#ddd',fontSize:13,minWidth:75},value:{color:'#ccc',fontSize:12},help:{color:'#aaa',fontSize:12},swatch:{height:30,width:30,borderRadius:15,borderWidth:3},layers:{maxHeight:260},layer:{flexDirection:'row',alignItems:'center',gap:10,padding:8,borderRadius:10},layerActive:{backgroundColor:'#42303e'},layerName:{flex:1,color:'#fff',fontSize:13},busy:{position:'absolute',top:80,alignSelf:'center'},pickerBanner:{backgroundColor:'#342137',padding:12,alignItems:'center'},maskShortcut:{position:'absolute',top:8,right:15,backgroundColor:'#29212d',borderRadius:18,paddingHorizontal:12,paddingVertical:9,flexDirection:'row',alignItems:'center',gap:6,borderWidth:1,borderColor:'#c343b7'}});

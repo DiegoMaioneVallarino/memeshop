@@ -5,6 +5,7 @@ import type { SkImage } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke } from '../../types/editor';
 import { useEditorStore } from '../../store/useEditorStore';
+import { getMemMask, isMemMask, loadMaskImage } from '../../services/maskStore';
 
 export type PhotoCanvasHandle = { snapshotBase64: () => Promise<string | null>; sampleColors: () => Promise<string[]>; reset: () => void };
 export type InteractionMode = 'layer' | 'view' | 'brush' | 'mask' | 'eyedropper' | 'wand';
@@ -202,8 +203,10 @@ function MaskPath({ stroke }: { stroke: MaskStroke }) {
   return <BrushPath points={stroke.points} width={stroke.radius * 2} color={stroke.restore ? '#ffffff' : '#000000'} opacity={stroke.opacity} softness={softnessOf(stroke.spread, stroke.hardness)} />;
 }
 function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { layer: ImageLayer; preview?: MaskStroke | null; preloaded?: SkImage; preloadedMask?: SkImage; gpuWand?: {layerId:string; x:number; y:number; tolerance:number; feather:number} | null }) {
-  const wandMaskLoaded = useImage(layer.magicMaskUri ?? null);
-  const wandMask = preloadedMask ?? wandMaskLoaded;
+  // Las máscaras en memoria (mem-mask:) no pasan por disco ni por useImage: no hay parpadeo al cambiar de máscara.
+  const memMask = isMemMask(layer.magicMaskUri) ? getMemMask(layer.magicMaskUri) : null;
+  const wandMaskLoaded = useImage(isMemMask(layer.magicMaskUri) ? null : layer.magicMaskUri ?? null);
+  const wandMask = preloadedMask ?? memMask ?? wandMaskLoaded;
   const loaded = useImage(preloaded ? null : layer.uri);
   const image = preloaded ?? loaded;
   if (!image) return null;
@@ -331,7 +334,7 @@ async function renderDocumentBase64(doc: EditorDocument): Promise<string> {
     const img = Skia.Image.MakeImageFromEncoded(data);
     if (!img) throw new Error(`No se pudo decodificar la imagen de la capa "${l.name}".`);
     images[l.id] = img;
-    if(l.magicMaskUri){const maskData=await Skia.Data.fromURI(l.magicMaskUri);const mask=Skia.Image.MakeImageFromEncoded(maskData);if(mask)images[`${l.id}:mask`]=mask;}
+    if(l.magicMaskUri){const mask=await loadMaskImage(l.magicMaskUri);if(mask)images[`${l.id}:mask`]=mask;}
   }
   const scale = Math.min(1, MAX_EXPORT_SIDE / Math.max(doc.width, doc.height));
   const out = drawAsImage(<ExportScene doc={doc} images={images} scale={scale} />, { width: Math.max(1, Math.round(doc.width * scale)), height: Math.max(1, Math.round(doc.height * scale)) });
@@ -348,8 +351,7 @@ export async function renderStickerBase64(layer: ImageLayer): Promise<{ base64: 
   const doc: EditorDocument = { width, height, layers: [clean], selectedId: null };
   const images: Record<string, SkImage> = { [layer.id]: image };
   if(layer.magicMaskUri){
-    const maskData=await Skia.Data.fromURI(layer.magicMaskUri);
-    const mask=Skia.Image.MakeImageFromEncoded(maskData);
+    const mask=await loadMaskImage(layer.magicMaskUri);
     if(!mask)throw new Error("No se pudo cargar la máscara del sticker");
     images[`${layer.id}:mask`]=mask;
   }
