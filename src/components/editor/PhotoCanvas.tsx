@@ -1,6 +1,6 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, Text } from 'react-native';
-import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask, Skia, BlurMask, drawAsImage } from '@shopify/react-native-skia';
+import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader } from '@shopify/react-native-skia';
 import type { SkImage } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke } from '../../types/editor';
@@ -19,6 +19,43 @@ function adjustmentMatrix(brightness: number, contrast: number, saturation: numb
   const b = brightness + .5 * (1 - c);
   return [c*(lr+sat),c*lg,c*lb,0,b, c*lr,c*(lg+sat),c*lb,0,b, c*lr,c*lg,c*(lb+sat),0,b, 0,0,0,1,0];
 }
+// GPU effects: SkSL samples the source texture directly. No offscreen Paint/ColorMatrix stack.
+const glitchEffect = Skia.RuntimeEffect.Make(`
+ uniform shader source;
+ uniform float2 dimensions;
+ uniform float intensity;
+ half4 main(float2 xy) {
+   float row = floor(xy.y / 9.0);
+   float noise = fract(sin(row * 127.1) * 43758.5453);
+   float shift = (noise > 0.76 ? (noise - 0.76) * 36.0 : 0.0) * intensity;
+   float stripe = step(0.92, fract(xy.y / 3.0)) * 0.13 * intensity;
+   float2 left = clamp(xy + float2(-3.5 * intensity + shift, 0.0), float2(0), dimensions - 1.0);
+   float2 right = clamp(xy + float2(3.5 * intensity + shift, 0.0), float2(0), dimensions - 1.0);
+   half4 center = source.eval(clamp(xy + float2(shift, 0), float2(0), dimensions - 1.0));
+   half4 r = source.eval(left);
+   half4 b = source.eval(right);
+   return half4(r.r, center.g, b.b, center.a) * (1.0 - stripe);
+ }
+`);
+// Global color-key preview runs in the GPU fragment shader. Contiguous flood-fill
+// still requires CPU graph traversal; it cannot be emulated by a per-pixel shader.
+const wandEffect = Skia.RuntimeEffect.Make(`
+ uniform shader source;
+ uniform float2 dimensions;
+ uniform float2 seed;
+ uniform float tolerance;
+ uniform float feather;
+ half4 main(float2 xy) {
+   half4 color = source.eval(xy);
+   half4 sampleColor = source.eval(seed * dimensions);
+   float3 delta = float3(color.rgb - sampleColor.rgb);
+   float distance = length(delta);
+   float threshold = 0.025 + tolerance * 0.65;
+   float edge = max(0.002, feather * 0.22);
+   float keep = smoothstep(threshold - edge, threshold + edge, distance);
+   return half4(keep, keep, keep, keep);
+ }
+`);
 // Edge softness 0..0.98. `spread` feathers the edge; `hardness` (0..1, 1 = hard) also softens it when lowered.
 const softnessOf = (spread = 0, hardness = 1) => Math.max(0, Math.min(.98, Math.max(spread / 100, 1 - hardness)));
 // A whole stroke becomes ONE smoothed path (quadratic curves through midpoints) instead of thousands of circles.
@@ -55,7 +92,7 @@ function PaintContent({ layer, preview }: { layer: PaintLayer; preview?: BrushSt
 function MaskPath({ stroke }: { stroke: MaskStroke }) {
   return <BrushPath points={stroke.points} width={stroke.radius * 2} color={stroke.restore ? '#ffffff' : '#000000'} opacity={stroke.opacity} softness={softnessOf(stroke.spread, stroke.hardness)} />;
 }
-function ImageContent({ layer, preview, preloaded, preloadedMask }: { layer: ImageLayer; preview?: MaskStroke | null; preloaded?: SkImage; preloadedMask?: SkImage }) {
+function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { layer: ImageLayer; preview?: MaskStroke | null; preloaded?: SkImage; preloadedMask?: SkImage; gpuWand?: {layerId:string; x:number; y:number; tolerance:number; feather:number} | null }) {
   const wandMaskLoaded = useImage(layer.magicMaskUri ?? null);
   const wandMask = preloadedMask ?? wandMaskLoaded;
   const loaded = useImage(preloaded ? null : layer.uri);
@@ -65,14 +102,27 @@ function ImageContent({ layer, preview, preloaded, preloadedMask }: { layer: Ima
   // Group layer. An offscreen layer with a nested Paint was rendering black on iOS.
   const adj = layer.adjustments;
   const hasAdjustments = !!adj && (Math.abs(adj.brightness ?? 0) > 0.0001 || Math.abs(adj.contrast ?? 0) > 0.0001 || Math.abs(adj.saturation ?? 0) > 0.0001);
-  const content = (
+  const glitch = layer.glitch ?? 0;
+  const content = glitch > 0 && glitchEffect ? (
+    <Rect x={0} y={0} width={layer.width} height={layer.height}>
+      <Shader source={glitchEffect} uniforms={{dimensions:[layer.width,layer.height],intensity:glitch}}>
+        <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
+      </Shader>
+    </Rect>
+  ) : (
     <SkiaImage image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill">
       {hasAdjustments && <ColorMatrix matrix={adjustmentMatrix(adj!.brightness ?? 0, adj!.contrast ?? 0, adj!.saturation ?? 0)} />}
     </SkiaImage>
   );
   const strokes = [...(layer.maskStrokes ?? []), ...(preview ? [preview] : [])];
-  if (!strokes.length && !layer.magicMaskUri) return content;
-  return <Mask mode="alpha" mask={<Group>{wandMask ? <SkiaImage image={wandMask} x={0} y={0} width={layer.width} height={layer.height} fit="fill" /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />}{strokes.map(st => <MaskPath key={st.id} stroke={st} />)}</Group>}>{content}</Mask>;
+  const gpu = gpuWand?.layerId === layer.id && wandEffect ? gpuWand : null;
+  const gpuMask = gpu ? <Rect x={0} y={0} width={layer.width} height={layer.height}>
+    <Shader source={wandEffect!} uniforms={{dimensions:[layer.width,layer.height],seed:[gpu.x,gpu.y],tolerance:gpu.tolerance/100,feather:gpu.feather/100}}>
+      <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
+    </Shader>
+  </Rect> : null;
+  if (!strokes.length && !layer.magicMaskUri && !gpu) return content;
+  return <Mask mode="alpha" mask={<Group>{gpuMask ?? (wandMask ? <SkiaImage image={wandMask} x={0} y={0} width={layer.width} height={layer.height} fit="fill" /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />)}{strokes.map(st => <MaskPath key={st.id} stroke={st} />)}</Group>}>{content}</Mask>;
 }
 // True projective homography from a rectangle to four target corners.
 // Unlike skew, parallel edges can converge to vanishing points.
@@ -111,7 +161,7 @@ function CropOverlay({ width, height, rect }: { width: number; height: number; r
     <Rect x={x} y={y} width={w} height={h} color="#ffffff" style="stroke" strokeWidth={sw * 1.4} />
   </Group>;
 }
-function LayerContent({ layer, selected, previewMask, previewStroke, images, cropPreview }: { layer: EditorLayer; selected: boolean; previewMask?: MaskStroke | null; previewStroke?: BrushStroke | null; images?: Record<string, SkImage>; cropPreview?: CropPreview | null }) {
+function LayerContent({ layer, selected, previewMask, previewStroke, images, cropPreview, gpuWand }: { layer: EditorLayer; selected: boolean; previewMask?: MaskStroke | null; previewStroke?: BrushStroke | null; images?: Record<string, SkImage>; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null }) {
   if (!layer.visible) return null;
   const flipX = layer.type === 'image' && !!layer.flipX;
   const transform = [
@@ -124,7 +174,7 @@ function LayerContent({ layer, selected, previewMask, previewStroke, images, cro
       <Group transform={flipX ? [{ translateX: layer.width / 2 }, { scaleX: -1 }, { translateX: -layer.width / 2 }] : undefined}>
         {layer.type === 'image' ? (() => {
           const crop = cropPreview && cropPreview.layerId === layer.id ? cropPreview : null;
-          let body = <ImageContent layer={layer} preview={previewMask} preloaded={images?.[layer.id]} preloadedMask={images?.[`${layer.id}:mask`]} />;
+          let body = <ImageContent layer={layer} preview={previewMask} preloaded={images?.[layer.id]} preloadedMask={images?.[`${layer.id}:mask`]} gpuWand={gpuWand} />;
           // Straighten preview: the image turns under the fixed crop rectangle.
           if (crop && crop.angle) body = <Group transform={[{ translateX: layer.width / 2 }, { translateY: layer.height / 2 }, { rotate: crop.angle }, { translateX: -layer.width / 2 }, { translateY: -layer.height / 2 }]}>{body}</Group>;
           const projected = (layer.perspectiveX || layer.perspectiveY) ? <Group matrix={perspectiveMatrix(layer.width,layer.height,layer.perspectiveX??0,layer.perspectiveY??0)}>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</Group> : <>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</>;
@@ -205,7 +255,7 @@ function hitTest(layers: EditorLayer[], x: number, y: number): EditorLayer | und
   }
 }
 
-export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocument; mode: InteractionMode; brush?: BrushOptions; onPickColor?: (color:string)=>void; onWandPick?: (x:number,y:number)=>void; cropPreview?: CropPreview | null }>(function PhotoCanvas({ document, mode, brush = { color: '#ff508e', size: 20, eraser: false }, onPickColor, onWandPick, cropPreview }, ref) {
+export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocument; mode: InteractionMode; brush?: BrushOptions; onPickColor?: (color:string)=>void; onWandPick?: (x:number,y:number)=>void; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null }>(function PhotoCanvas({ document, mode, gpuWand, brush = { color: '#ff508e', size: 20, eraser: false }, onPickColor, onWandPick, cropPreview }, ref) {
   const canvas = useRef<React.ElementRef<typeof Canvas>>(null);
   const [pickerHud,setPickerHud]=useState<{x:number;y:number;color:string}|null>(null);
   const pickerCache=useRef<{pixels:Uint8Array|Uint8ClampedArray;width:number;height:number}|null>(null);
@@ -490,7 +540,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
         <Group origin={{ x: size.width / 2, y: size.height / 2 }} transform={[{ translateX: viewport.x }, { translateY: viewport.y }, { scale: viewport.zoom }, { rotate: viewport.rotation }]}>
           <Group transform={[{ translateX: offsetX }, { translateY: offsetY }, { scale: fit }]}>
             <Rect x={0} y={0} width={document.width} height={document.height} color="#ffffff" />
-            {document.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} previewMask={mode === 'mask' && layer.id === document.selectedId ? previewMask : null} previewStroke={mode === 'brush' && layer.id === document.selectedId ? previewStroke : null} cropPreview={cropPreview} />)}
+            {document.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} previewMask={mode === 'mask' && layer.id === document.selectedId ? previewMask : null} previewStroke={mode === 'brush' && layer.id === document.selectedId ? previewStroke : null} cropPreview={cropPreview} gpuWand={gpuWand} />)}
           </Group>
         </Group>
       </Canvas>

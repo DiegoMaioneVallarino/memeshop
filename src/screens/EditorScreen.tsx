@@ -35,6 +35,7 @@ export function EditorScreen() {
   const [wandPoint,setWandPoint]=useState<{x:number;y:number}|null>(null);
   const [wandLayerId,setWandLayerId]=useState<string|null>(null);
   const [wandWorking,setWandWorking]=useState(false);
+  const [gpuWand,setGpuWand]=useState<{layerId:string;x:number;y:number;tolerance:number;feather:number}|null>(null);
   const wandSequence=useRef(0);
   const wandTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
   const wandPointRef=useRef<{x:number;y:number}|null>(null);
@@ -81,7 +82,7 @@ export function EditorScreen() {
   const canvas=useRef<PhotoCanvasHandle>(null);
   const selected=document?.layers.find(l=>l.id===document.selectedId);
   useEffect(()=>{if(tool!=='crop'&&tool!=='rotate'&&tool!=='perspective')setCrop(initialCrop);},[tool]);
-  useEffect(()=>{setCrop(initialCrop);wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);wandPointRef.current=null;wandLayerRef.current=null;setWandPoint(null);setWandLayerId(null);setWandWorking(false);},[document?.selectedId]);
+  useEffect(()=>{setCrop(initialCrop);wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);wandPointRef.current=null;wandLayerRef.current=null;setWandPoint(null);setWandLayerId(null);setWandWorking(false);setGpuWand(null);},[document?.selectedId]);
   const cropImage=selected?.type==='image'?selected:null;
   const cropPreview=tool==='crop'&&cropImage?{layerId:cropImage.id,rect:cropRect(crop,cropImage.width,cropImage.height,!!cropImage.flipX),angle:cropLocalAngle(crop,!!cropImage.flipX)}:null;
   async function importImage(replace=false) {
@@ -143,6 +144,16 @@ export function EditorScreen() {
     finally{if(sequence===wandSequence.current)setWandWorking(false);}
   };
   const scheduleWand=(x:number,y:number,layerId:string,delay=160)=>{
+    if(!wandSettingsRef.current.contiguous){
+      wandSequence.current++;
+      if(wandTimer.current)clearTimeout(wandTimer.current);
+      wandPointRef.current={x,y};wandLayerRef.current=layerId;
+      setWandPoint({x,y});setWandLayerId(layerId);
+      setGpuWand({layerId,x,y,tolerance:wandSettingsRef.current.tolerance,feather:wandSettingsRef.current.feather});
+      setWandWorking(false);
+      return;
+    }
+    setGpuWand(null);
     wandPointRef.current={x,y};wandLayerRef.current=layerId;
     setWandPoint({x,y});setWandLayerId(layerId);
     const sequence=++wandSequence.current;
@@ -162,12 +173,25 @@ export function EditorScreen() {
   const resetWand=()=>{
     wandSequence.current++;if(wandTimer.current)clearTimeout(wandTimer.current);
     if(selected?.type==='image')update(selected.id,{magicMaskUri:undefined});
+    setGpuWand(null);
     wandPointRef.current=null;wandLayerRef.current=null;setWandPoint(null);setWandLayerId(null);setWandWorking(false);
   };
   const saveWandSticker=async()=>{
     const layer=useEditorStore.getState().document?.layers.find(l=>l.id===wandLayerRef.current);
-    if(!layer||layer.type!=='image'||!layer.magicMaskUri)return;
+    if(!layer||layer.type!=='image'||(!layer.magicMaskUri&&!gpuWand))return;
     if(wandWorking){Alert.alert('Un momento','Espera a que termine la previsualización.');return;}
+    if(gpuWand){
+      setBusy(true);
+      try{
+        const uri=await createMagicMask(layer.uri,gpuWand.x,gpuWand.y,{tolerance:gpuWand.tolerance,feather:gpuWand.feather,contiguous:false});
+        useEditorStore.getState().update(layer.id,{magicMaskUri:uri});
+        setGpuWand(null);
+        // The PNG is persisted; press Save as sticker again after this step.
+        Alert.alert('Máscara aplicada','La selección se guardó en la capa. Ahora puedes guardarla como sticker.');
+      }catch(e){Alert.alert('Varita mágica',String(e));}
+      finally{setBusy(false);}
+      return;
+    }
     setBusy(true);
     try{
       const {base64,width,height}=await renderStickerBase64(layer);
@@ -207,7 +231,8 @@ export function EditorScreen() {
     if(!selected||selected.type!=='image')return;
     const presets:Record<string,[number,number,number]>={Ninguno:[0,0,0],Vibrante:[.03,.16,.48],Vintage:[.08,-.12,-.38],Desaturado:[0,.06,-1],Brillante:[.18,.08,.12],Dramático:[-.08,.4,-.3],Pastel:[.12,-.18,-.15],Frío:[-.03,.06,-.12],Cálido:[.09,.06,.22]};
     const [brightness,contrast,saturation]=presets[name]||[0,0,0];
-    update(selected.id,{adjustments:{brightness,contrast,saturation}} as any);setFilterPreset(name);
+    const glitches:Record<string,number>={'Glitch RGB':0.45,'Glitch VHS':0.9,'Glitch Digital':1.5};
+    update(selected.id,{adjustments:{brightness,contrast,saturation},glitch:glitches[name]??0} as any);setFilterPreset(name);
   };
   const normAngle=(a:number)=>Math.atan2(Math.sin(a),Math.cos(a));
   // A real mirror. Rendering is R(rotation)·F^flipX, so a mirror across the screen's vertical axis toggles flipX and negates
@@ -249,22 +274,22 @@ export function EditorScreen() {
   if(home)return <SafeAreaView style={{flex:1,backgroundColor:'white'}}><ProjectsHome projects={projects} onOpen={openProject} onCreate={newProject} onDelete={id=>{void deleteProject(id).then(()=>{void pruneAssets();return listProjects().then(setProjects);});}}/></SafeAreaView>;
   return <SafeAreaView style={styles.root}>
     <EditorHeader back={()=>{void goHome();}} undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} exportImage={exportPreview} busy={busy} eraseImage={document && selected?.type==='image' ? ()=>{setMaskMode('erase');setTool('mask');setLayersOpen(false);} : undefined} eraseActive={tool==='mask'}/>
-    <View style={styles.workspace}>{document?<PhotoCanvas key={`${document.width}-${document.height}`} ref={canvas} document={document} mode={pickingColor?'eyedropper':tool==='brush'?'brush':tool==='mask'?'mask':tool==='wand'?'wand':'layer'} cropPreview={cropPreview} onWandPick={(x,y)=>void applyWand(x,y)} onPickColor={color=>{setBrushColor(color);setEraser(false);setPickingColor(false);setTool('brush');}} brush={{color:brushColor,size:brushSize,eraser,opacity:tool==='mask'?maskOpacity/100:brushOpacity/100,hardness:(tool==='mask'?maskHardness:brushHardness)/100,spread:tool==='mask'?maskSpread:brushSpread,restore:maskMode==='restore'}}/>:<View style={styles.empty}><Feather name="image" size={48} color="#aaa"/><Text style={styles.emptyTitle}>Comienza a crear</Text><MiniButton label="Elegir imagen" onPress={()=>importImage(true)}/></View>}{document && layersOpen && <LayersDrawer document={document} onClose={()=>setLayersOpen(false)}/>}</View>
+    <View style={styles.workspace}>{document?<PhotoCanvas key={`${document.width}-${document.height}`} ref={canvas} document={document} gpuWand={tool==='wand' ? gpuWand : null} mode={pickingColor?'eyedropper':tool==='brush'?'brush':tool==='mask'?'mask':tool==='wand'?'wand':'layer'} cropPreview={cropPreview} onWandPick={(x,y)=>void applyWand(x,y)} onPickColor={color=>{setBrushColor(color);setEraser(false);setPickingColor(false);setTool('brush');}} brush={{color:brushColor,size:brushSize,eraser,opacity:tool==='mask'?maskOpacity/100:brushOpacity/100,hardness:(tool==='mask'?maskHardness:brushHardness)/100,spread:tool==='mask'?maskSpread:brushSpread,restore:maskMode==='restore'}}/>:<View style={styles.empty}><Feather name="image" size={48} color="#aaa"/><Text style={styles.emptyTitle}>Comienza a crear</Text><MiniButton label="Elegir imagen" onPress={()=>importImage(true)}/></View>}{document && layersOpen && <LayersDrawer document={document} onClose={()=>setLayersOpen(false)}/>}</View>
     
     {document && tool && <View style={styles.sheetContainer}><Sheet title={{tools:'Herramientas',adjust:'Ajustes de imagen',brush:'Pincel',mask:'Borrar / restaurar',layers:'Capas',add:'Añadir elemento',transform:'Transformar capa',effects:'Efectos',crop:'Recortar',rotate:'Rotar',perspective:'Perspectiva',wand:'Varita mágica',text:'Texto',stickers:'Stickers',images:'Imágenes'}[tool]} onClose={()=>setTool(null)}>
       {tool==='wand' && <View style={{paddingHorizontal:12,paddingBottom:12,gap:6}}>
-        <Text style={styles.help}>Toca el fondo. La selección se actualiza automáticamente al mover los controles.</Text>
+        <Text style={styles.help}>Toca el fondo. Modo global: previsualización GPU instantánea. Modo contiguo: selección precisa por CPU.</Text>
         <Text style={styles.field}>Tolerancia · {wandTolerance}%</Text>
         <Slider minimumValue={0} maximumValue={100} step={1} value={wandTolerance} onValueChange={setWandTolerance} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
         <Text style={styles.field}>Suavizado · {wandFeather}%</Text>
         <Slider minimumValue={0} maximumValue={100} step={1} value={wandFeather} onValueChange={setWandFeather} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
         <MiniButton label={wandContiguous?'Modo: Contiguo':'Modo: Global'} onPress={()=>setWandContiguous(v=>!v)}/>
         {wandWorking && <View style={{flexDirection:'row',alignItems:'center',gap:8}}><ActivityIndicator color="#18e500"/><Text style={styles.help}>Actualizando selección…</Text></View>}
-        {wandPoint && wandLayerId===selected?.id && <Pressable disabled={wandWorking||busy} onPress={()=>void saveWandSticker()} style={{backgroundColor:wandWorking?'#315b32':'#18e500',padding:14,borderRadius:12,alignItems:'center'}}><Text style={{color:'#062208',fontWeight:'800'}}>Guardar como sticker</Text></Pressable>}
+        {wandPoint && wandLayerId===selected?.id && <Pressable disabled={wandWorking||busy} onPress={()=>void saveWandSticker()} style={{backgroundColor:wandWorking?'#315b32':'#18e500',padding:14,borderRadius:12,alignItems:'center'}}><Text style={{color:'#062208',fontWeight:'800'}}>{gpuWand?'Aplicar máscara GPU':'Guardar como sticker'}</Text></Pressable>}
         <MiniButton label="Restablecer fondo" onPress={resetWand}/>
       </View>}
       {tool==='text' && <View style={styles.panel}><Text style={styles.help}>{tool==='effects'?'Los ajustes de brillo, contraste y saturación están disponibles en Herramientas → Ajustar. Los efectos avanzados llegarán después.':'Las capas de texto editable se implementarán en una próxima versión.'}</Text></View>}
-      {tool==='effects' && <View style={{paddingBottom:16}}><ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>{['TODOS','COLORES','CÁMARA DIGITAL','ARTÍSTICOS'].map(c=><Pressable key={c} onPress={()=>setFilterCategory(c)} style={{padding:12,borderBottomWidth:filterCategory===c?2:0,borderBottomColor:'#19e500'}}><Text style={{color:filterCategory===c?'#19e500':'white',fontWeight:'600'}}>{c}</Text></Pressable>)}</ScrollView><ScrollView horizontal showsHorizontalScrollIndicator={false}>{['Ninguno','Vibrante','Vintage','Desaturado','Brillante','Dramático','Pastel','Frío','Cálido'].filter((n,i)=>filterCategory==='TODOS'||filterCategory==='COLORES'||filterCategory==='CÁMARA DIGITAL'&&i<6||filterCategory==='ARTÍSTICOS'&&i>=4).map(name=><Pressable key={name} onPress={()=>applyFilter(name)} style={{marginRight:9,width:92,alignItems:'center'}}><View style={{width:90,height:76,backgroundColor:name==='Vintage'?'#866d52':name==='Vibrante'?'#2e8a7a':name==='Dramático'?'#404049':name==='Frío'?'#42688a':name==='Cálido'?'#b87537':'#444',borderRadius:12,borderWidth:filterPreset===name?2:0,borderColor:'#19e500',alignItems:'center',justifyContent:'center'}}><Feather name="image" size={27} color="white"/></View><Text numberOfLines={1} style={{color:'white',fontSize:11,marginTop:7}}>{name}</Text></Pressable>)}</ScrollView>{selected?.type!=='image'&&<Text style={styles.help}>Selecciona una imagen para aplicar filtros.</Text>}</View>}
+      {tool==='effects' && <View style={{paddingBottom:16}}><ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>{['TODOS','COLORES','CÁMARA DIGITAL','ARTÍSTICOS','GLITCH'].map(c=><Pressable key={c} onPress={()=>setFilterCategory(c)} style={{padding:12,borderBottomWidth:filterCategory===c?2:0,borderBottomColor:'#19e500'}}><Text style={{color:filterCategory===c?'#19e500':'white',fontWeight:'600'}}>{c}</Text></Pressable>)}</ScrollView><ScrollView horizontal showsHorizontalScrollIndicator={false}>{['Ninguno','Vibrante','Vintage','Desaturado','Brillante','Dramático','Pastel','Frío','Cálido','Glitch RGB','Glitch VHS','Glitch Digital'].filter((n,i)=>filterCategory==='TODOS'||filterCategory==='GLITCH'&&i>=9||filterCategory==='COLORES'&&i<9||filterCategory==='CÁMARA DIGITAL'&&i<6||filterCategory==='ARTÍSTICOS'&&i>=4&&i<9).map(name=><Pressable key={name} onPress={()=>applyFilter(name)} style={{marginRight:9,width:92,alignItems:'center'}}><View style={{width:90,height:76,backgroundColor:name==='Vintage'?'#866d52':name==='Vibrante'?'#2e8a7a':name==='Dramático'?'#404049':name==='Frío'?'#42688a':name==='Cálido'?'#b87537':name.startsWith('Glitch')?'#173e29':'#444',borderRadius:12,borderWidth:filterPreset===name?2:0,borderColor:'#19e500',alignItems:'center',justifyContent:'center'}}><Feather name={name.startsWith('Glitch')?'zap':'image'} size={27} color="white"/></View><Text numberOfLines={1} style={{color:'white',fontSize:11,marginTop:7}}>{name}</Text></Pressable>)}</ScrollView>{selected?.type!=='image'&&<Text style={styles.help}>Selecciona una imagen para aplicar filtros.</Text>}</View>}
       {['crop','rotate','perspective'].includes(tool) && <View style={{paddingBottom:10}}><View style={{flexDirection:'row',justifyContent:'space-around',paddingVertical:12}}>{(['crop','rotate','perspective'] as Tool[]).map((t)=><Pressable key={t} onPress={()=>setTool(t)} style={{padding:12,borderRadius:12,backgroundColor:tool===t?'#383838':'transparent'}}><Text style={{color:'white',fontSize:15}}>{t==='crop'?'Recortar':t==='rotate'?'Rotar':'Perspectiva'}</Text></Pressable>)}</View>{tool==='crop'&&<CropPanel crop={crop} setCrop={setCrop} onApply={()=>void applyCrop()} hasImage={!!cropImage} busy={busy}/>}{tool==='rotate'&&<><View style={styles.row}><MiniButton label="↶ 90°" onPress={()=>{if(selected)update(selected.id,{rotation:selected.rotation-Math.PI/2});}}/><MiniButton label="↷ 90°" onPress={()=>{if(selected)update(selected.id,{rotation:selected.rotation+Math.PI/2});}}/><MiniButton label="Voltear horizontal" onPress={()=>flip('h')}/><MiniButton label="Voltear vertical" onPress={()=>flip('v')}/></View><Text style={styles.field}>Ángulo · {Math.round((selected?.rotation??0)*180/Math.PI)}°</Text><Slider minimumValue={-180} maximumValue={180} step={1} value={(selected?.rotation??0)*180/Math.PI} onValueChange={v=>{if(selected)update(selected.id,{rotation:v*Math.PI/180});}} minimumTrackTintColor="#19e500" thumbTintColor="#fff"/></>}{tool==='perspective'&&selected?.type==='image'&&<><Text style={styles.field}>Convergencia horizontal (proyectiva)</Text><Slider minimumValue={-.5} maximumValue={.5} value={selected.perspectiveX??0} onValueChange={v=>update(selected.id,{perspectiveX:v} as any)} minimumTrackTintColor="#19e500" thumbTintColor="#fff"/><Text style={styles.field}>Convergencia vertical (proyectiva)</Text><Slider minimumValue={-.5} maximumValue={.5} value={selected.perspectiveY??0} onValueChange={v=>update(selected.id,{perspectiveY:v} as any)} minimumTrackTintColor="#19e500" thumbTintColor="#fff"/></>}</View>}
       {tool==='tools' && <View style={styles.grid}><SheetButton icon="crop" title="Recortar" onPress={()=>{setCrop(initialCrop);setTool('crop');}}/><SheetButton icon="target" title="Varita mágica" onPress={()=>setTool('wand')}/><SheetButton icon="sliders" title="Ajustar" onPress={()=>setTool('adjust')}/><SheetButton icon="move" title="Transformar" onPress={()=>setTool('transform')}/><SheetButton icon="layers" title="Capas" onPress={()=>setTool('layers')}/><SheetButton icon="edit-3" title="Dibujar" onPress={()=>{if(!selected||selected.type!=='paint')addPaint();setTool('brush');}}/><SheetButton icon="plus-square" title="Añadir" onPress={()=>setTool('add')}/></View>}
       {tool==='add' && <View style={styles.grid}><SheetButton icon="image" title="Imagen" onPress={()=>importImage(false)}/><SheetButton icon="edit-3" title="Pintura" onPress={()=>{addPaint();setTool('brush');}}/><SheetButton icon="square" title="Forma" onPress={()=>{addShape();setTool('layers');}}/><SheetButton icon="refresh-cw" title="Nueva foto" onPress={()=>importImage(true)}/></View>}
