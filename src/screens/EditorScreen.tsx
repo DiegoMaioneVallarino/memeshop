@@ -1,6 +1,6 @@
 import { createMagicMask } from '../services/magicWand';
 import React, { useRef, useState, useEffect } from 'react';
-import { ActivityIndicator, Alert, Share, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, Image, useWindowDimensions, TextInput } from 'react-native';
+import { ActivityIndicator, Alert, Share, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, Image, useWindowDimensions, TextInput, Keyboard } from 'react-native';
 import { ProjectsHome } from './ProjectsHome';
 import { listProjects, persistProject, deleteProject, durableImage, pruneAssets, detachLibraryAssets, migrateLegacyMasks, type SavedProject } from '../services/projects';
 import { clearMasks, loadMaskImage, registerMask, releaseMask } from '../services/maskStore';
@@ -48,6 +48,8 @@ export function EditorScreen() {
   const wandLayerRef=useRef<string|null>(null);
   const wandSettingsRef=useRef({tolerance:25,feather:12,contiguous:true});
   const [filterCategory,setFilterCategory]=useState('TODOS');
+  const [textKeyboardOpen,setTextKeyboardOpen]=useState(false);
+  useEffect(()=>{const show=Keyboard.addListener('keyboardDidShow',()=>setTextKeyboardOpen(true));const hide=Keyboard.addListener('keyboardDidHide',()=>setTextKeyboardOpen(false));return ()=>{show.remove();hide.remove();};},[]);
   const [textTab,setTextTab]=useState<'Fuente'|'Trazo'|'Color'|'Resaltador'|'Sombra'>('Fuente');
   const [filterPreset,setFilterPreset]=useState('Ninguno');
   const [replacementSource,setReplacementSource]=useState('#18e500');
@@ -321,7 +323,7 @@ export function EditorScreen() {
     <EditorHeader editing={editing} applyEdit={acceptAction} cancelEdit={discardAction} back={()=>{void goHome();}} undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} exportImage={exportPreview} busy={busy} eraseImage={document && selected?.type==='image' ? ()=>{setMaskMode('erase');setTool('mask');setLayersOpen(false);} : undefined} eraseActive={tool==='mask'} removeBackground={document && selected?.type==='image' ? ()=>{void removeBackground();} : undefined} removeBackgroundBusy={bgWorking}/>
     <View style={styles.workspace}>{document?<PhotoCanvas key={`${document.width}-${document.height}`} ref={canvas} document={document} gpuWand={tool==='wand' ? gpuWand : null} mode={pickingColor?'eyedropper':tool==='brush'?'brush':tool==='mask'?'mask':tool==='wand'?'wand':'layer'} cropPreview={cropPreview} onWandPick={(x,y)=>void applyWand(x,y)} onPickColor={color=>{setBrushColor(color);setEraser(false);setPickingColor(false);setTool('brush');}} brush={{color:brushColor,size:brushSize,eraser,opacity:tool==='mask'?maskOpacity/100:brushOpacity/100,hardness:(tool==='mask'?maskHardness:brushHardness)/100,spread:tool==='mask'?maskSpread:brushSpread,restore:maskMode==='restore'}}/>:<View style={styles.empty}><Feather name="image" size={48} color="#aaa"/><Text style={styles.emptyTitle}>Comienza a crear</Text><MiniButton label="Elegir imagen" onPress={()=>importImage(true)}/></View>}{document && layersOpen && <LayersDrawer document={document} onClose={()=>setLayersOpen(false)}/>}</View>
     
-    {document && tool && <View style={[styles.sheetContainer,tool==='text'&&styles.textFloating]}><Sheet title={{tools:'Herramientas',adjust:'Ajustes de imagen',brush:'Pincel',mask:'Borrar / restaurar',layers:'Capas',add:'Añadir elemento',transform:'Transformar capa',effects:'Efectos',crop:'Recortar',rotate:'Rotar',perspective:'Perspectiva',wand:'Varita mágica',text:'Texto',stickers:'Stickers',images:'Imágenes'}[tool]} onClose={()=>setTool(null)}>
+    {document && tool && <View style={[styles.sheetContainer,tool==='text'&&styles.textFloating,textKeyboardOpen&&tool==='text'&&styles.textFloatingKeyboard]}><Sheet title={{tools:'Herramientas',adjust:'Ajustes de imagen',brush:'Pincel',mask:'Borrar / restaurar',layers:'Capas',add:'Añadir elemento',transform:'Transformar capa',effects:'Efectos',crop:'Recortar',rotate:'Rotar',perspective:'Perspectiva',wand:'Varita mágica',text:'Texto',stickers:'Stickers',images:'Imágenes'}[tool]} onClose={()=>setTool(null)}>
       {tool==='wand' && <View style={{paddingHorizontal:12,paddingBottom:12,gap:6}}>
         <Text style={styles.help}>Toca el fondo. Global: quita todo lo que tenga ese color. Contiguo: solo la zona conectada al toque.</Text>
         <Text style={styles.field}>Tolerancia · {wandTolerance}%</Text>
@@ -333,47 +335,35 @@ export function EditorScreen() {
         {wandPoint && wandLayerId===selected?.id && <Pressable disabled={wandWorking||busy} onPress={()=>void saveWandSticker()} style={{backgroundColor:wandWorking?'#315b32':'#18e500',padding:14,borderRadius:12,alignItems:'center'}}><Text style={{color:'#062208',fontWeight:'800'}}>{gpuWand?'Aplicar máscara GPU':'Guardar como sticker'}</Text></Pressable>}
         <MiniButton label="Restablecer fondo" onPress={resetWand}/>
       </View>}
-      {tool==='text' && <View style={styles.panel}>
-        {selected?.type !== 'text' ? <Text style={styles.help}>Selecciona una capa de texto.</Text> : <>
-          <View style={[styles.row,{justifyContent:'space-between'}]}><Text style={styles.field}>Texto</Text><MiniButton label="+ Nuevo" onPress={addText}/></View>
-          <TextInput multiline value={selected.text} onChangeText={v=>update(selected.id,{text:v,name:v.split('\n')[0].slice(0,28)||'Texto'} as any)} placeholder="Escribe tu texto" placeholderTextColor="#777" style={[styles.textInput,styles.textInputCompact]}/>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:8,paddingVertical:6}}>
-            {(['Fuente','Trazo','Color','Resaltador','Sombra'] as const).map((tab)=><Pressable key={tab} onPress={()=>setTextTab(tab)} style={{paddingHorizontal:11,paddingVertical:6,borderRadius:15,backgroundColor:textTab===tab?'#18e500':'#282828'}}><Text style={{color:textTab===tab?'#061b09':'#eee',fontWeight:'700'}}>{tab}</Text></Pressable>)}
+      {tool==='text' && selected?.type==='text' && <View style={styles.textPanel}>
+        <View style={styles.textTopRow}>
+          <TextInput
+            multiline={false}
+            selectTextOnFocus
+            value={selected.text}
+            onChangeText={v=>update(selected.id,{text:v,name:v.split('\n')[0].slice(0,28)||'Texto'} as any)}
+            placeholder="Escribe tu texto"
+            placeholderTextColor="#888"
+            style={styles.textEntry}
+          />
+          <Pressable onPress={()=>{Keyboard.dismiss();addText();}} style={styles.textAdd}><Feather name="plus" color="#fff" size={19}/></Pressable>
+        </View>
+        {!textKeyboardOpen && <>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={styles.textTabs}>
+            {(['Fuente','Trazo','Color','Resaltador','Sombra'] as const).map((tab)=><Pressable key={tab} onPress={()=>setTextTab(tab)} style={[styles.textTabButton,textTab===tab&&styles.textTabActive]}><Text style={{color:textTab===tab?'#061b09':'#ddd',fontWeight:'700',fontSize:12}}>{tab}</Text></Pressable>)}
           </ScrollView>
-          <ScrollView style={{maxHeight:95}} nestedScrollEnabled keyboardShouldPersistTaps="handled" contentContainerStyle={{paddingBottom:8}}>
-          {textTab==='Fuente' && <>
-            <Text style={styles.field}>Tipografía</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:9}}>
-              {['System','Arial','Helvetica','Georgia','Courier','Times','Impact'].map(f=><Pressable key={f} onPress={()=>update(selected.id,{fontFamily:f} as any)} style={{minWidth:104,padding:12,backgroundColor:(selected.fontFamily??'System')===f?'#185c2a':'#282828',borderRadius:10,borderWidth:1,borderColor:(selected.fontFamily??'System')===f?'#18e500':'#444'}}><Text style={{fontFamily:f==='System'?undefined:f==='Times'?'Times New Roman':f==='Courier'?'Courier New':f,fontSize:18,color:'white',textAlign:'center'}} numberOfLines={1}>{f}</Text></Pressable>)}
-            </ScrollView>
-            <Text style={styles.field}>Tamaño · {Math.round(selected.fontSize)} px</Text>
-            <Slider minimumValue={Math.max(8,document.width*.012)} maximumValue={Math.max(32,document.width*.24)} step={1} value={selected.fontSize} onValueChange={v=>update(selected.id,{fontSize:v,height:Math.max(1,selected.text.split('\n').length*v*selected.lineHeight)} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
-            <Text style={styles.field}>Alineación</Text>
-            <View style={styles.row}>{(['left','center','right'] as const).map(a=><Pressable key={a} onPress={()=>update(selected.id,{align:a} as any)} style={[styles.mini,selected.align===a&&{backgroundColor:'#19672b'}]}><Text style={styles.miniText}>{a==='left'?'Izquierda':a==='center'?'Centro':'Derecha'}</Text></Pressable>)}</View>
-            <Text style={styles.field}>Interlineado · {selected.lineHeight.toFixed(2)}</Text>
-            <Slider minimumValue={0.8} maximumValue={2} step={0.05} value={selected.lineHeight} onValueChange={v=>update(selected.id,{lineHeight:v,height:Math.max(1,selected.text.split('\n').length*selected.fontSize*v)} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
-          </>}
-          {textTab==='Trazo' && <>
-            <Text style={styles.field}>Grosor del contorno · {Math.round(selected.strokeWidth??0)} px</Text>
-            <Slider minimumValue={0} maximumValue={Math.max(10,selected.fontSize*.2)} step={1} value={selected.strokeWidth??0} onValueChange={v=>update(selected.id,{strokeWidth:v} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
-            <Text style={styles.field}>Color del trazo</Text>
-            <View style={styles.row}>{['#000000','#ffffff','#18e500','#ff304f','#25c5ff','#ffe05a'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{strokeColor:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.strokeColor===c?'#18e500':'#666',borderWidth:3}]}/>)}</View>
-          </>}
-          {textTab==='Color' && <>
-            <Text style={styles.field}>Color del texto</Text>
-            <View style={styles.row}>{['#ffffff','#000000','#18e500','#ff304f','#25c5ff','#ffe05a','#ff8800','#fa8fff'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{color:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.color===c?'#18e500':'#666',borderWidth:3}]}/>)}</View>
-          </>}
-          {textTab==='Resaltador' && <>
-            <MiniButton label="Sin resaltado" onPress={()=>update(selected.id,{highlightColor:null} as any)}/>
-            <View style={styles.row}>{['#ffe05a','#18e500','#25c5ff','#ff304f','#ffffff'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{highlightColor:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.highlightColor===c?'#18e500':'#666',borderWidth:3}]}/>)}</View>
-          </>}
-          {textTab==='Sombra' && <>
-            <Text style={styles.field}>Distancia de sombra · {Math.round(selected.shadowBlur??0)} px</Text>
-            <Slider minimumValue={0} maximumValue={Math.max(12,selected.fontSize*.3)} step={1} value={selected.shadowBlur??0} onValueChange={v=>update(selected.id,{shadowBlur:v} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>
-            <Text style={styles.field}>Color de sombra</Text>
-            <View style={styles.row}>{['#000000','#ffffff','#18e500','#ff304f','#25c5ff'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{shadowColor:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.shadowColor===c?'#18e500':'#666',borderWidth:3}]}/>)}</View>
-          </>}
-          </ScrollView>
+          <View style={styles.textOptions}>
+            {textTab==='Fuente' && <>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:6,alignItems:'center'}}>
+                {['System','Arial','Helvetica','Georgia','Courier','Times','Impact'].map(f=><Pressable key={f} onPress={()=>update(selected.id,{fontFamily:f} as any)} style={[styles.fontChip,(selected.fontFamily??'System')===f&&{borderColor:'#18e500'}]}><Text style={{color:'#fff',fontSize:12}}>{f}</Text></Pressable>)}
+              </ScrollView>
+              <View style={styles.textSliderRow}><Text style={styles.textSliderLabel}>Tamaño {Math.round(selected.fontSize)}</Text><Slider style={{flex:1,height:27}} minimumValue={8} maximumValue={Math.max(32,document.width*.24)} step={1} value={selected.fontSize} onValueChange={v=>update(selected.id,{fontSize:v,height:Math.max(1,selected.text.split('\n').length*v*selected.lineHeight)} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/></View>
+            </>}
+            {textTab==='Trazo' && <View style={styles.textSliderRow}><Text style={styles.textSliderLabel}>Trazo {Math.round(selected.strokeWidth??0)}</Text><Slider style={{flex:1,height:27}} minimumValue={0} maximumValue={Math.max(10,selected.fontSize*.2)} step={1} value={selected.strokeWidth??0} onValueChange={v=>update(selected.id,{strokeWidth:v} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>{['#000000','#ffffff','#18e500'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{strokeColor:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.strokeColor===c?'#18e500':'#777',borderWidth:2}]}/>)}</View>}
+            {textTab==='Color' && <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:10,alignItems:'center'}}>{['#111111','#ffffff','#18e500','#ff304f','#25c5ff','#ffe05a','#ff8800','#fa8fff'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{color:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.color===c?'#18e500':'#777',borderWidth:2}]}/>)}</ScrollView>}
+            {textTab==='Resaltador' && <View style={styles.textSliderRow}><MiniButton label="Ninguno" onPress={()=>update(selected.id,{highlightColor:null} as any)}/>{['#ffe05a','#18e500','#25c5ff','#ff304f','#ffffff'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{highlightColor:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.highlightColor===c?'#18e500':'#777',borderWidth:2}]}/>)}</View>}
+            {textTab==='Sombra' && <View style={styles.textSliderRow}><Text style={styles.textSliderLabel}>Sombra {Math.round(selected.shadowBlur??0)}</Text><Slider style={{flex:1,height:27}} minimumValue={0} maximumValue={Math.max(12,selected.fontSize*.3)} step={1} value={selected.shadowBlur??0} onValueChange={v=>update(selected.id,{shadowBlur:v} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/>{['#000000','#ffffff','#18e500'].map(c=><Pressable key={c} onPress={()=>update(selected.id,{shadowColor:c} as any)} style={[styles.textSwatch,{backgroundColor:c,borderColor:selected.shadowColor===c?'#18e500':'#777',borderWidth:2}]}/>)}</View>}
+          </View>
         </>}
       </View>}
       {tool==='effects' && <View style={{paddingBottom:16}}>
@@ -407,9 +397,9 @@ export function EditorScreen() {
       {tool==='transform' && <View style={styles.panel}>{selected?<><View style={styles.row}><MiniButton label="←" onPress={()=>update(selected.id,{x:selected.x-document.width*.025})}/><MiniButton label="→" onPress={()=>update(selected.id,{x:selected.x+document.width*.025})}/><MiniButton label="↑" onPress={()=>update(selected.id,{y:selected.y-document.height*.025})}/><MiniButton label="↓" onPress={()=>update(selected.id,{y:selected.y+document.height*.025})}/><MiniButton label="↺" onPress={()=>update(selected.id,{rotation:selected.rotation-Math.PI/12})}/><MiniButton label="↻" onPress={()=>update(selected.id,{rotation:selected.rotation+Math.PI/12})}/></View><View style={styles.row}><Text style={styles.field}>Tamaño</Text><MiniButton label="−" onPress={()=>update(selected.id,{width:selected.width*.9,height:selected.height*.9})}/><MiniButton label="+" onPress={()=>update(selected.id,{width:selected.width*1.1,height:selected.height*1.1})}/><Text style={styles.field}>Opacidad</Text><MiniButton label="−" onPress={()=>update(selected.id,{opacity:selected.opacity-.1})}/><Text style={styles.value}>{Math.round(selected.opacity*100)}%</Text><MiniButton label="+" onPress={()=>update(selected.id,{opacity:selected.opacity+.1})}/></View><View style={styles.row}><MiniButton label="Subir" onPress={()=>move(selected.id,1)}/><MiniButton label="Bajar" onPress={()=>move(selected.id,-1)}/><MiniButton label="Duplicar" onPress={()=>duplicate(selected.id)}/><MiniButton label="Eliminar" onPress={()=>remove(selected.id)}/></View></>:<Text style={styles.help}>Selecciona una capa para transformarla.</Text>}</View>}
     </Sheet></View>}
     {pickingColor && <Pressable style={styles.pickerBanner} onPress={()=>{setPickingColor(false);setTool('brush');}}><Text style={{color:'white'}}>Mantén pulsado y arrastra el cuentagotas · Toca aquí para cancelar</Text></Pressable>}
-    {document && <EditorToolbar active={layersOpen?'layers':tool} onSelect={choose}/>}
+    {document && <View style={textKeyboardOpen ? {opacity:0} : undefined}><EditorToolbar active={layersOpen?'layers':tool} onSelect={choose}/></View>}
     {document && stickersOpen && <StickerLibrary onInsert={insertSticker} onClose={()=>setStickersOpen(false)}/>}
     {(busy||imageLoading||bgWorking)&&<ActivityIndicator color="#19e500" style={styles.busy}/>}
   </SafeAreaView>;
 }
-const styles=StyleSheet.create({root:{flex:1,backgroundColor:'#101010'},headerWrap:{position:'relative',zIndex:5},topEraser:{position:'absolute',right:105,top:11,alignItems:'center',justifyContent:'center',padding:5,borderRadius:9,minWidth:50},topEraserActive:{backgroundColor:'#5c2658'},topEraserText:{color:'#fff',fontSize:10},workspace:{flex:1,backgroundColor:'#1a1a1a'},empty:{flex:1,alignItems:'center',justifyContent:'center',gap:20},emptyTitle:{color:'#fff',fontSize:22,fontWeight:'600'},sheetContainer:{maxHeight:'49%'},textFloating:{position:'absolute',bottom:73,left:0,right:0,zIndex:10,maxHeight:215,backgroundColor:'#191919',borderTopLeftRadius:16,borderTopRightRadius:16,overflow:'hidden'},grid:{flexDirection:'row',flexWrap:'wrap'},panel:{gap:12,paddingBottom:8},row:{flexDirection:'row',alignItems:'center',flexWrap:'wrap',gap:9},mini:{backgroundColor:'#303030',paddingHorizontal:13,paddingVertical:10,borderRadius:9},miniText:{color:'#fff',fontSize:12,fontWeight:'600'},field:{color:'#ddd',fontSize:13,minWidth:75},value:{color:'#ccc',fontSize:12},help:{color:'#aaa',fontSize:12},swatch:{height:30,width:30,borderRadius:15,borderWidth:3},layers:{maxHeight:260},layer:{flexDirection:'row',alignItems:'center',gap:10,padding:8,borderRadius:10},layerActive:{backgroundColor:'#42303e'},layerName:{flex:1,color:'#fff',fontSize:13},busy:{position:'absolute',top:80,alignSelf:'center'},pickerBanner:{backgroundColor:'#342137',padding:12,alignItems:'center'},textPrimary:{backgroundColor:'#18e500',padding:13,borderRadius:12,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:8},textPrimaryLabel:{color:'#062208',fontWeight:'800'},textInput:{color:'#fff',backgroundColor:'#292929',borderRadius:10,borderWidth:1,borderColor:'#555',padding:12,minHeight:72,textAlignVertical:'top',fontSize:17},textInputCompact:{minHeight:36,maxHeight:44,paddingVertical:5,paddingHorizontal:10,fontSize:15},textSwatch:{width:26,height:26,borderRadius:13},maskShortcut:{position:'absolute',top:8,right:15,backgroundColor:'#29212d',borderRadius:18,paddingHorizontal:12,paddingVertical:9,flexDirection:'row',alignItems:'center',gap:6,borderWidth:1,borderColor:'#c343b7'}});
+const styles=StyleSheet.create({root:{flex:1,backgroundColor:'#101010'},headerWrap:{position:'relative',zIndex:5},topEraser:{position:'absolute',right:105,top:11,alignItems:'center',justifyContent:'center',padding:5,borderRadius:9,minWidth:50},topEraserActive:{backgroundColor:'#5c2658'},topEraserText:{color:'#fff',fontSize:10},workspace:{flex:1,backgroundColor:'#1a1a1a'},empty:{flex:1,alignItems:'center',justifyContent:'center',gap:20},emptyTitle:{color:'#fff',fontSize:22,fontWeight:'600'},sheetContainer:{maxHeight:'49%'},textFloating:{position:'absolute',bottom:67,left:0,right:0,zIndex:10,maxHeight:220,backgroundColor:'#191919',borderTopLeftRadius:14,borderTopRightRadius:14,overflow:'hidden'},grid:{flexDirection:'row',flexWrap:'wrap'},panel:{gap:12,paddingBottom:8},row:{flexDirection:'row',alignItems:'center',flexWrap:'wrap',gap:9},mini:{backgroundColor:'#303030',paddingHorizontal:13,paddingVertical:10,borderRadius:9},miniText:{color:'#fff',fontSize:12,fontWeight:'600'},field:{color:'#ddd',fontSize:13,minWidth:75},value:{color:'#ccc',fontSize:12},help:{color:'#aaa',fontSize:12},swatch:{height:30,width:30,borderRadius:15,borderWidth:3},layers:{maxHeight:260},layer:{flexDirection:'row',alignItems:'center',gap:10,padding:8,borderRadius:10},layerActive:{backgroundColor:'#42303e'},layerName:{flex:1,color:'#fff',fontSize:13},busy:{position:'absolute',top:80,alignSelf:'center'},pickerBanner:{backgroundColor:'#342137',padding:12,alignItems:'center'},textPrimary:{backgroundColor:'#18e500',padding:13,borderRadius:12,flexDirection:'row',alignItems:'center',justifyContent:'center',gap:8},textPrimaryLabel:{color:'#062208',fontWeight:'800'},textInput:{color:'#fff',backgroundColor:'#292929',borderRadius:10,borderWidth:1,borderColor:'#555',padding:12,minHeight:72,textAlignVertical:'top',fontSize:17},textInputCompact:{minHeight:36,maxHeight:44,paddingVertical:5,paddingHorizontal:10,fontSize:15},textSwatch:{width:24,height:24,borderRadius:12},textFloatingKeyboard:{bottom:undefined,top:0,maxHeight:90},textPanel:{gap:5,paddingBottom:1},textTopRow:{flexDirection:'row',alignItems:'center',gap:7},textEntry:{flex:1,height:35,borderRadius:8,backgroundColor:'#303030',color:'#fff',fontSize:14,paddingHorizontal:10,paddingVertical:5},textAdd:{width:35,height:35,alignItems:'center',justifyContent:'center',backgroundColor:'#303030',borderRadius:8},textTabs:{gap:6,paddingVertical:3},textTabButton:{paddingHorizontal:10,paddingVertical:6,backgroundColor:'#292929',borderRadius:8},textTabActive:{backgroundColor:'#18e500'},textOptions:{height:61,justifyContent:'center',gap:2},textSliderRow:{flexDirection:'row',alignItems:'center',gap:7},textSliderLabel:{color:'#ddd',fontSize:11},fontChip:{backgroundColor:'#292929',borderColor:'#444',borderWidth:1,borderRadius:7,paddingHorizontal:10,paddingVertical:7},maskShortcut:{position:'absolute',top:8,right:15,backgroundColor:'#29212d',borderRadius:18,paddingHorizontal:12,paddingVertical:9,flexDirection:'row',alignItems:'center',gap:6,borderWidth:1,borderColor:'#c343b7'}});

@@ -1,5 +1,5 @@
-import React, { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
-import { StyleSheet, View, Text } from 'react-native';
+import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { StyleSheet, View, Text, Keyboard } from 'react-native';
 import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Text as SkiaText, matchFont } from '@shopify/react-native-skia';
 import type { SkImage } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -291,14 +291,17 @@ function TextContent({ layer }: { layer: TextLayer }) {
   const naturalHeight = Math.max(lineHeight, lines.length * lineHeight);
   const scaleY = layer.height / naturalHeight;
   // Typeface.MakeDefault is absent in react-native-skia 2.14; matchFont is supported on native.
-  const font = matchFont({fontFamily: TEXT_FONT_FAMILIES[layer.fontFamily ?? 'System'] ?? 'System', fontSize: Math.max(1, layer.fontSize)});
+  const font = matchFont({ fontFamily: TEXT_FONT_FAMILIES[layer.fontFamily ?? 'System'] ?? 'Helvetica', fontSize: Math.max(1, layer.fontSize) });
   const outline = Math.max(0, layer.strokeWidth ?? 0);
   const shadow = Math.max(0, layer.shadowBlur ?? 0);
-  return <Group transform={[{ scaleY }]}>
+  const widest = Math.max(1, ...lines.map(line => font.measureText(line || ' ').width));
+  const scaleX = Math.min(1, layer.width / widest);
+  return <Group transform={[{ scaleX }, { scaleY }]}>
     {lines.map((line, i) => {
       const content = line || ' ';
       const measured = font.measureText(content).width;
-      const x = layer.align === 'center' ? (layer.width - measured) / 2 : layer.align === 'right' ? layer.width - measured : 0;
+      const contentWidth = layer.width / scaleX;
+      const x = layer.align === 'center' ? (contentWidth - measured) / 2 : layer.align === 'right' ? contentWidth - measured : 0;
       const y = (i + 0.85) * lineHeight;
       return <Group key={i}>
         {shadow > 0 && <SkiaText text={content} x={x + shadow * .65} y={y + shadow * .65} font={font} color={layer.shadowColor ?? '#000000'} />}
@@ -681,8 +684,15 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     return mode==='wand' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),tap) : mode==='eyedropper' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),pickerGesture) : Gesture.Race(Gesture.Simultaneous(twoFinger, pinchGesture), oneFinger, tap);
   }, [mode, document.width, document.height]);
 
+  const keyboardVisible = useRef(false);
+  useEffect(() => {
+    const onShow = Keyboard.addListener('keyboardWillShow', () => { keyboardVisible.current = true; });
+    const onHide = Keyboard.addListener('keyboardDidHide', () => { keyboardVisible.current = false; });
+    const onShowAndroid = Keyboard.addListener('keyboardDidShow', () => { keyboardVisible.current = true; });
+    return () => { onShow.remove(); onHide.remove(); onShowAndroid.remove(); };
+  }, []);
   return <GestureDetector gesture={gesture}>
-    <View style={styles.root} onLayout={e => setSize({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}>
+    <View style={styles.root} onLayout={e => { if (!keyboardVisible.current) setSize({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height }); }}>
       <Canvas ref={canvas} style={StyleSheet.absoluteFill}>
         <Group origin={{ x: size.width / 2, y: size.height / 2 }} transform={[{ translateX: viewport.x }, { translateY: viewport.y }, { scale: viewport.zoom }, { rotate: viewport.rotation }]}>
           <Group transform={[{ translateX: offsetX }, { translateY: offsetY }, { scale: fit }]}>
