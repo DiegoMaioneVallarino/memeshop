@@ -1,9 +1,9 @@
 import React, { forwardRef, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, Text } from 'react-native';
-import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader } from '@shopify/react-native-skia';
+import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Text as SkiaText } from '@shopify/react-native-skia';
 import type { SkImage } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke } from '../../types/editor';
+import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer } from '../../types/editor';
 import { useEditorStore } from '../../store/useEditorStore';
 import { getMemMask, isMemMask, loadMaskImage } from '../../services/maskStore';
 
@@ -279,6 +279,22 @@ function CropOverlay({ width, height, rect }: { width: number; height: number; r
     <Rect x={x} y={y} width={w} height={h} color="#ffffff" style="stroke" strokeWidth={sw * 1.4} />
   </Group>;
 }
+// Render text with the same Skia scene used by the interactive canvas and PNG export.
+// Font size is expressed in document pixels; resizing the layer scales glyphs proportionally.
+function TextContent({ layer }: { layer: TextLayer }) {
+  const lines = layer.text.split('\n');
+  const lineHeight = layer.fontSize * layer.lineHeight;
+  const naturalHeight = Math.max(lineHeight, lines.length * lineHeight);
+  const scaleY = layer.height / naturalHeight;
+  const font = useMemo(() => Skia.Font(Skia.Typeface.MakeDefault(), Math.max(1, layer.fontSize)), [layer.fontSize]);
+  return <Group transform={[{ scaleY }]}>
+    {lines.map((line, i) => {
+      const measured = font.measureText(line).width;
+      const x = layer.align === 'center' ? (layer.width - measured) / 2 : layer.align === 'right' ? layer.width - measured : 0;
+      return <SkiaText key={i} text={line || ' '} x={x} y={(i + 0.85) * lineHeight} font={font} color={layer.color} />;
+    })}
+  </Group>;
+}
 function LayerContent({ layer, selected, previewMask, previewStroke, images, cropPreview, gpuWand }: { layer: EditorLayer; selected: boolean; previewMask?: MaskStroke | null; previewStroke?: BrushStroke | null; images?: Record<string, SkImage>; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null }) {
   if (!layer.visible) return null;
   const flipX = layer.type === 'image' && !!layer.flipX;
@@ -297,7 +313,7 @@ function LayerContent({ layer, selected, previewMask, previewStroke, images, cro
           if (crop && crop.angle) body = <Group transform={[{ translateX: layer.width / 2 }, { translateY: layer.height / 2 }, { rotate: crop.angle }, { translateX: -layer.width / 2 }, { translateY: -layer.height / 2 }]}>{body}</Group>;
           const projected = (layer.perspectiveX || layer.perspectiveY) ? <Group matrix={perspectiveMatrix(layer.width,layer.height,layer.perspectiveX??0,layer.perspectiveY??0)}>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</Group> : <>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</>;
           return projected;
-        })() : layer.type === 'paint' ? <PaintContent layer={layer} preview={previewStroke} /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />}
+        })() : layer.type === 'paint' ? <PaintContent layer={layer} preview={previewStroke} /> : layer.type === 'text' ? <TextContent layer={layer} /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />}
       </Group>
     </Group>
     {selected && <Group>
