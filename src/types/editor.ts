@@ -1,3 +1,5 @@
+export type LayerBlendMode = 'srcOver' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten' | 'difference';
+export type LayerMeta = { locked?: boolean; blendMode?: LayerBlendMode; groupId?: string };
 export type MaskStroke = { id: string; points: StrokePoint[]; radius: number; opacity: number; spread: number; restore: boolean; hardness?: number };
 export type ImageLayer = { id: string; type: 'image'; name: string; uri: string; sourceWidth: number; sourceHeight: number; x: number; y: number; width: number; height: number; rotation: number; flipX?: boolean; opacity: number; visible: boolean; perspectiveX?: number; perspectiveY?: number; maskStrokes?: MaskStroke[]; magicMaskUri?: string; adjustments?: PhotoAdjustments; glitch?: number; colorReplace?: { source: string; target: string; tolerance: number; softness: number; strength: number }; glitchSettings?: { mode: number; intensity: number; density: number; seed: number } };
 export type ShapeLayer = { id: string; type: 'shape'; name: string; color: string; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
@@ -6,6 +8,6 @@ export type BrushStroke = { id: string; points: StrokePoint[]; color: string; si
 export type PaintLayer = { id: string; type: 'paint'; name: string; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean; strokes: BrushStroke[] };
 export type PhotoAdjustments = { brightness: number; contrast: number; saturation: number };
 export type TextLayer = { id: string; type: 'text'; name: string; text: string; color: string; fontSize: number; align: 'left' | 'center' | 'right'; lineHeight: number; fontFamily?: string; letterSpacing?: number; highlightOpacity?: number; shadowOffsetX?: number; shadowOffsetY?: number; strokeWidth?: number; strokeColor?: string; shadowBlur?: number; shadowColor?: string; highlightColor?: string | null; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
-export type EditorLayer = ImageLayer | ShapeLayer | PaintLayer | TextLayer;
+export type EditorLayer = (ImageLayer | ShapeLayer | PaintLayer | TextLayer) & LayerMeta;
 export type PhotoAsset = { uri: string; width: number; height: number; name?: string };
 export type EditorDocument = { width: number; height: number; layers: EditorLayer[]; selectedId: string | null };

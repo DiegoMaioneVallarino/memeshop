@@ -32,6 +32,10 @@ type State = {
   move: (id: string, direction: -1 | 1) => void;
   duplicate: (id: string) => void;
   remove: (id: string) => void;
+  groupLayers: (ids: string[]) => void;
+  ungroupLayers: (groupId: string) => void;
+  setGroupVisibility: (groupId: string, visible: boolean) => void;
+  setGroupLocked: (groupId: string, locked: boolean) => void;
   resetDocument: () => void;
 };
 
@@ -132,6 +136,7 @@ export const useEditorStore = create<State>((set) => ({
     if (!s.document) return s;
     const layers = s.document.layers.map((layer) => {
       if (layer.id !== id) return layer;
+      if (layer.locked && !Object.keys(patch).every(k => ['locked','visible'].includes(k))) return layer;
       const next = { ...layer, ...patch } as EditorLayer;
       return { ...next, opacity: clamp(next.opacity, 0, 1), width: Math.max(1, next.width), height: Math.max(1, next.height) };
     });
@@ -141,22 +146,34 @@ export const useEditorStore = create<State>((set) => ({
     if (!s.document) return s;
     const layers = [...s.document.layers], index = layers.findIndex((l) => l.id === id), target = index + direction;
     if (index < 0 || target < 0 || target >= layers.length) return s;
+    if (layers[index].locked || layers[target].locked) return s;
     [layers[index], layers[target]] = [layers[target], layers[index]];
     return commit(s, { ...s.document, layers });
   }),
   duplicate: (id) => set((s) => {
     if (!s.document) return s;
     const layers = [...s.document.layers], index = layers.findIndex((l) => l.id === id);
-    if (index < 0) return s;
+    if (index < 0 || layers[index].locked) return s;
     const original = layers[index];
-    const layer = { ...original, id: makeId(), name: `${original.name} copia`, x: original.x + 24, y: original.y + 24 };
+    const layer = { ...original, groupId: undefined, id: makeId(), name: `${original.name} copia`, x: original.x + 24, y: original.y + 24 };
     layers.splice(index + 1, 0, layer);
     return commit(s, { ...s.document, layers, selectedId: layer.id });
   }),
   remove: (id) => set((s) => {
     if (!s.document) return s;
+    if (s.document.layers.find(l => l.id === id)?.locked) return s;
     const layers = s.document.layers.filter((l) => l.id !== id);
     return commit(s, { ...s.document, layers, selectedId: s.document.selectedId === id ? layers[layers.length - 1]?.id ?? null : s.document.selectedId });
   }),
+  groupLayers: ids => set(s => {
+    if (!s.document) return s;
+    const chosen = new Set(ids);
+    if (chosen.size < 2 || s.document.layers.filter(l => chosen.has(l.id) && !l.locked).length !== chosen.size) return s;
+    const groupId = makeId();
+    return commit(s, { ...s.document, layers: s.document.layers.map(l => chosen.has(l.id) ? { ...l, groupId } : l) });
+  }),
+  ungroupLayers: groupId => set(s => !s.document ? s : commit(s, { ...s.document, layers: s.document.layers.map(l => l.groupId === groupId ? { ...l, groupId: undefined } : l) })),
+  setGroupVisibility: (groupId, visible) => set(s => !s.document ? s : commit(s, { ...s.document, layers: s.document.layers.map(l => l.groupId === groupId ? { ...l, visible } : l) })),
+  setGroupLocked: (groupId, locked) => set(s => !s.document ? s : commit(s, { ...s.document, layers: s.document.layers.map(l => l.groupId === groupId ? { ...l, locked } : l) })),
   resetDocument: () => { resetCoalesce(); set({ document: null, past: [], future: [], editBaseline: null }); },
 }));

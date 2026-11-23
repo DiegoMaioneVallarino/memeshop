@@ -328,7 +328,7 @@ function LayerContent({ layer, selected, previewMask, previewStroke, images, cro
     { rotate: layer.rotation }, { translateX: -layer.width / 2 }, { translateY: -layer.height / 2 },
   ];
   return <Group transform={transform}>
-    <Group opacity={layer.opacity}>
+    <Group opacity={layer.opacity} layer={<Paint blendMode={layer.blendMode ?? 'srcOver'} />}>
       {/* flipX mirrors only the content (image + mask + crop overlay); selection handles below stay upright. */}
       <Group transform={flipX ? [{ translateX: layer.width / 2 }, { scaleX: -1 }, { translateX: -layer.width / 2 }] : undefined}>
         {layer.type === 'image' ? (() => {
@@ -484,7 +484,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     if (modeRef.current === 'mask') {
       const current = useEditorStore.getState().document;
       const image = current?.layers.find(l => l.id === current.selectedId && l.type === 'image');
-      if (!image || image.type !== 'image') return;
+      if (!image || image.type !== 'image' || image.locked) return;
       const local = toLocal(d, image);
       pendingMask.current = { id: image.id, points: [local] };
       beginEdit();
@@ -494,7 +494,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     if (modeRef.current === 'brush') {
       const current = useEditorStore.getState().document;
       const paint = current?.layers.find(l => l.id === current.selectedId && l.type === 'paint');
-      if (!paint || paint.type !== 'paint') return;
+      if (!paint || paint.type !== 'paint' || paint.locked) return;
       const local = toLocal(d, paint);
       pendingStroke.current = { id: paint.id, points: [local] };
       beginEdit();
@@ -504,7 +504,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     const current = useEditorStore.getState().document;
     const selected = current?.layers.find(l => l.id === current.selectedId);
     let handle: string | undefined;
-    if (selected && modeRef.current === 'layer') {
+    if (selected && !selected.locked && modeRef.current === 'layer') {
       const cx=selected.x+selected.width/2,cy=selected.y+selected.height/2;
       const dx=d.x-cx,dy=d.y-cy,c=Math.cos(selected.rotation),sn=Math.sin(selected.rotation);
       const lx=dx*c+dy*sn+selected.width/2,ly=-dx*sn+dy*c+selected.height/2;
@@ -516,11 +516,11 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       ];
       handle=handles.find(([,hx,hy])=>Math.hypot(lx-hx,ly-hy)<radius)?.[0];
     }
-    if (handle === 'delete' && selected) { remove(selected.id); return; }
+    if (handle === 'delete' && selected && !selected.locked) { remove(selected.id); return; }
     const hit = handle ? selected : modeRef.current === 'layer' && current ? hitTest(current.layers, d.x, d.y) : undefined;
     if (modeRef.current === 'layer') select(hit?.id ?? null);
-    if (hit) beginEdit();
-    active.current = { id: hit?.id ?? null, layer: hit ? { ...hit } : null, vp: { ...vpRef.current }, lastX: d.x, lastY: d.y, zoom: 1, rotation: 0, changed: false, handle, startPoint:d };
+    if (hit && !hit.locked) beginEdit();
+    active.current = { id: hit?.locked ? null : hit?.id ?? null, layer: hit && !hit.locked ? { ...hit } : null, vp: { ...vpRef.current }, lastX: d.x, lastY: d.y, zoom: 1, rotation: 0, changed: false, handle, startPoint:d };
   };
   const drawAt = (x: number, y: number) => {
     const mask = pendingMask.current;
