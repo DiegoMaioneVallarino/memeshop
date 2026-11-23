@@ -392,7 +392,7 @@ export function EditorScreen() {
             {slider('Centro X',w.centerX,0,1,v=>patch({centerX:v}))}
             {slider('Centro Y',w.centerY,0,1,v=>patch({centerY:v}))}
             {(w.mode==='wave'||w.mode==='mesh')&&slider('Frecuencia',w.frequency,.25,8,v=>patch({frequency:v}))}
-            {w.mode==='push'&&<Text style={styles.help}>Arrastra el dedo sobre la imagen para empujar sus píxeles. Dos dedos: mover y ampliar el lienzo. Se conservan los últimos 16 segmentos.</Text>}
+            {w.mode==='push'&&<><Text style={styles.help}>Liquify táctil: arrastra para deformar; Congelar protege áreas. El círculo verde indica el radio del pincel. Hasta 128 segmentos en 8 pasadas GPU.</Text><View style={{flexDirection:'row',gap:6}}><MiniButton label={(w.brushMode!=='freeze'?'✓ ':'')+'Empujar'} onPress={()=>patch({brushMode:'push'})}/><MiniButton label={(w.brushMode==='freeze'?'✓ ':'')+'Congelar'} onPress={()=>patch({brushMode:'freeze'})}/></View><MiniButton label="Deshacer último trazo" onPress={()=>{const st=w.strokes??[];const last=st[st.length-1]?.strokeId;patch({strokes:last===undefined?st.slice(0,-1):st.filter(t=>t.strokeId!==last)});}}/><MiniButton label="Quitar zonas congeladas" onPress={()=>patch({frozen:[]})}/></>}
             {w.mode==='push'&&<MiniButton label="Borrar trazos Liquify" onPress={()=>patch({strokes:[]})}/>}
             <MiniButton label="Restablecer deformación" onPress={()=>update(selected.id,{warp:undefined})}/>
           </>;

@@ -1,0 +1,1 @@
+v0.27: 128 segmentos de Liquify en hasta 8 etapas GPU anidadas, congelación de hasta 8 zonas circulares, indicador visual del radio durante el arrastre, deshacer último trazo, borrar deformación y descongelar. Limitación: no son trazos arbitrariamente largos; se mantienen los últimos 128 segmentos. Requiere validación de shaders SkSL en iOS/Android.

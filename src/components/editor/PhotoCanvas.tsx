@@ -136,6 +136,8 @@ const warpEffect = Skia.RuntimeEffect.Make(`
   uniform float mode;
   uniform float4 touches[16];
   uniform float touchCount;
+  uniform float4 frozen[8];
+  uniform float freezeCount;
   half4 main(float2 xy) {
     float2 uv = xy / max(dimensions, float2(1.0));
     float2 delta = uv - center;
@@ -145,6 +147,13 @@ const warpEffect = Skia.RuntimeEffect.Make(`
     float r = max(radius, 0.001);
     float falloff = pow(max(0.0, 1.0 - dist / r), 2.0);
     float2 sampleUV = uv;
+    float frozenMask = 0.0;
+    for (int k=0; k<8; k++) {
+      if (float(k) >= freezeCount) break;
+      float4 f = frozen[k];
+      float2 diff = (uv-f.xy)*float2(aspect,1.0);
+      frozenMask = max(frozenMask, 1.0-smoothstep(f.z*0.85, f.z, length(diff)));
+    }
     if (mode < 0.5) { // Liquify: directional radial push
       if (touchCount > 0.5) {
         // Each touch is a brush segment: xy and displacement in normalized image space.
@@ -153,7 +162,7 @@ const warpEffect = Skia.RuntimeEffect.Make(`
           float4 touch = touches[i];
           float2 dd = (uv-touch.xy)*float2(aspect,1.0);
           float weight = pow(max(0.0,1.0-length(dd)/r),2.0);
-          sampleUV -= touch.zw * weight * abs(strength);
+          sampleUV -= touch.zw * weight * abs(strength) * (1.0-frozenMask);
         }
       } else {
         sampleUV -= float2(strength * 0.24 * falloff / max(aspect, 0.01), 0.0);
@@ -267,10 +276,27 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
   // Attach the color filter to the image's own paint rather than an offscreen
   // Group layer. An offscreen layer with a nested Paint was rendering black on iOS.
   const warp = layer.warp;
+  // Compose groups of 16 segments as nested GPU shader stages. This avoids
+  // silently dropping all but the last 16 segments of a Liquify gesture.
+  const touches = warp?.strokes ?? [];
+  const frozen = warp?.frozen ?? [];
+  const stages = warp?.mode === 'push' && touches.length ?
+    Array.from({length:Math.ceil(touches.length/16)},(_,i)=>touches.slice(i*16,(i+1)*16)) : [[]];
+  const warpSource = (index:number):React.ReactNode => {
+    if (!warp || !warpEffect || index < 0) return <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />;
+    const group=stages[index];
+    return <Shader source={warpEffect} uniforms={{
+      dimensions:[layer.width,layer.height],center:[warp.centerX,warp.centerY],
+      radius:warp.radius,strength:warp.strength,frequency:warp.frequency,
+      mode:['push','twirl','bulge','wave','mesh'].indexOf(warp.mode),
+      touchCount:group.length,
+      touches:Array.from({length:16},(_,i)=>{const pt=group[i];return pt?[pt.x,pt.y,pt.dx,pt.dy]:[0,0,0,0];}).flat(),
+      freezeCount:Math.min(8,frozen.length),
+      frozen:Array.from({length:8},(_,i)=>{const f=frozen[i];return f?[f.x,f.y,f.radius,0]:[0,0,0,0];}).flat(),
+    }}>{warpSource(index-1)}</Shader>;
+  };
   const warped = warp && warpEffect ? <Rect x={0} y={0} width={layer.width} height={layer.height}>
-    <Shader source={warpEffect} uniforms={{dimensions:[layer.width,layer.height],center:[warp.centerX,warp.centerY],radius:warp.radius,strength:warp.strength,frequency:warp.frequency,mode:['push','twirl','bulge','wave','mesh'].indexOf(warp.mode),touchCount:Math.min(16,warp.strokes?.length??0),touches:Array.from({length:16},(_,i)=>{const p=warp.strokes?.[i];return p?[p.x,p.y,p.dx,p.dy]:[0,0,0,0];}).flat()}}>
-      <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
-    </Shader>
+    {warpSource(stages.length-1)}
   </Rect> : null;
   const adj = layer.adjustments;
   const hasAdjustments = !!adj && (Math.abs(adj.brightness ?? 0) > 0.0001 || Math.abs(adj.contrast ?? 0) > 0.0001 || Math.abs(adj.saturation ?? 0) > 0.0001);
@@ -501,7 +527,8 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   onPickRef.current = onPickColor;
   const brushRef = useRef(brush);
   brushRef.current = brush;
-  const warpPointer = useRef<{id:string;last:{x:number;y:number};layer:ImageLayer}|null>(null);
+  const warpPointer = useRef<{id:string;last:{x:number;y:number};layer:ImageLayer;strokeId:number}|null>(null);
+  const [warpCursor,setWarpCursor] = useState<{x:number;y:number;radius:number}|null>(null);
   const pendingStroke = useRef<{ id: string; points: StrokePoint[] } | null>(null);
   const [previewStroke, setPreviewStroke] = useState<BrushStroke | null>(null);
   const [previewMask, setPreviewMask] = useState<MaskStroke | null>(null);
@@ -555,7 +582,14 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       if(layer?.type!=='image'||layer.locked||layer.warp?.mode!=='push') return;
       const pt=toLocal(d,layer);
       if(pt.x<0||pt.y<0||pt.x>layer.width||pt.y>layer.height)return;
-      warpPointer.current={id:layer.id,last:{x:pt.x/layer.width,y:pt.y/layer.height},layer};
+      const pos={x:pt.x/layer.width,y:pt.y/layer.height};
+      if(layer.warp.brushMode==='freeze'){
+        beginEdit();
+        const old=layer.warp.frozen??[];
+        update(layer.id,{warp:{...layer.warp,frozen:[...old,{...pos,radius:layer.warp.radius}].slice(-8)}});
+        finishEdit();return;
+      }
+      warpPointer.current={id:layer.id,last:pos,layer,strokeId:Date.now()};
       beginEdit();return;
     }
     if (modeRef.current === 'mask') {
@@ -623,6 +657,8 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     setPreviewStroke(makeStroke('preview', [...pending.points]));
   };
   const warpDrag=(x:number,y:number)=>{
+    const currentLayer=useEditorStore.getState().document?.layers.find(l=>l.id===useEditorStore.getState().document?.selectedId);
+    if(currentLayer?.type==='image'&&currentLayer.warp){const scale=Math.min(sizeRef.current.width/document.width,sizeRef.current.height/document.height)*vpRef.current.zoom;setWarpCursor({x,y,radius:currentLayer.warp.radius*Math.min(currentLayer.width,currentLayer.height)*scale});}
     const pointer=warpPointer.current;
     if(!pointer)return;
     const layer=useEditorStore.getState().document?.layers.find(l=>l.id===pointer.id);
@@ -631,9 +667,10 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     const next={x:pt.x/layer.width,y:pt.y/layer.height};
     const dx=next.x-pointer.last.x,dy=next.y-pointer.last.y;
     if(Math.hypot(dx,dy)<0.001)return;
-    const point={x:(pointer.last.x+next.x)/2,y:(pointer.last.y+next.y)/2,dx,dy};
-    // Bounded shader workload: retain the 16 most recent brush segments.
-    update(pointer.id,{warp:{...layer.warp,strokes:[...(layer.warp.strokes??[]),point].slice(-16)}});
+    const point={x:(pointer.last.x+next.x)/2,y:(pointer.last.y+next.y)/2,dx,dy,strokeId:pointer.strokeId};
+    // Keep up to 128 segments (8 nested GPU stages), preserving entire gestures
+    // until the bounded capacity is reached. Undo removes the complete last stroke.
+    update(pointer.id,{warp:{...layer.warp,strokes:[...(layer.warp.strokes??[]),point].slice(-128)}});
     pointer.last=next;
   };
   const drag = (dx: number, dy: number) => {
@@ -679,6 +716,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   };
   const end = () => {
     if(warpPointer.current){warpPointer.current=null;finishEdit();}
+    setWarpCursor(null);
     if (pendingMask.current) {
       const m = pendingMask.current;
       appendMaskStroke(m.id, makeMask(uid(), m.points));
@@ -801,6 +839,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
           </Group>
         </Group>
       </Canvas>
+      {mode==='warp' && warpCursor && <View pointerEvents="none" style={{position:'absolute',left:warpCursor.x-warpCursor.radius,top:warpCursor.y-warpCursor.radius,width:warpCursor.radius*2,height:warpCursor.radius*2,borderRadius:warpCursor.radius,borderWidth:1.5,borderColor:'#18e500',backgroundColor:'rgba(24,229,0,0.07)'}}/>}
       {mode==='eyedropper' && pickerHud && <View pointerEvents="none" style={[styles.pickerHud,{left:Math.max(8,Math.min(size.width-164,pickerHud.x-72)),top:Math.max(8,pickerHud.y-125)}]}>
         <View style={[styles.pickerLens,{backgroundColor:pickerHud.color}]}><View style={styles.pickerCross}/></View>
         <View style={styles.pickerReadout}><View style={[styles.pickerSwatch,{backgroundColor:pickerHud.color}]}/><Text style={styles.pickerHex}>{pickerHud.color.toUpperCase()}</Text></View>
