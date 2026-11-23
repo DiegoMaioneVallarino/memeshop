@@ -3,7 +3,7 @@ import { StyleSheet, View, Text, Keyboard } from 'react-native';
 import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Text as SkiaText, matchFont } from '@shopify/react-native-skia';
 import type { SkImage } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer } from '../../types/editor';
+import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer, EffectStage } from '../../types/editor';
 import { useEditorStore } from '../../store/useEditorStore';
 import { getMemMask, isMemMask, loadMaskImage } from '../../services/maskStore';
 
@@ -20,6 +20,21 @@ function adjustmentMatrix(brightness: number, contrast: number, saturation: numb
   const b = brightness + .5 * (1 - c);
   return [c*(lr+sat),c*lg,c*lb,0,b, c*lr,c*(lg+sat),c*lb,0,b, c*lr,c*lg,c*(lb+sat),0,b, 0,0,0,1,0];
 }
+// This stage is composable: it samples the previous shader instead of the original image.
+const adjustmentEffect = Skia.RuntimeEffect.Make(`
+ uniform shader source;
+ uniform float brightness;
+ uniform float contrast;
+ uniform float saturation;
+ half4 main(float2 p) {
+   half4 c = source.eval(p);
+   float3 rgb = float3(c.rgb);
+   float gray = dot(rgb, float3(0.2126,0.7152,0.0722));
+   rgb = mix(float3(gray),rgb,1.0+saturation);
+   rgb = (rgb - 0.5)*(1.0+contrast)+0.5+brightness;
+   return half4(half3(clamp(rgb,0.0,1.0)),c.a);
+ }
+`);
 // GPU effects: SkSL samples the source texture directly. No offscreen Paint/ColorMatrix stack.
 const glitchEffect = Skia.RuntimeEffect.Make(`
  uniform shader source;
@@ -276,48 +291,47 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
   // Attach the color filter to the image's own paint rather than an offscreen
   // Group layer. An offscreen layer with a nested Paint was rendering black on iOS.
   const warp = layer.warp;
-  // Compose groups of 16 segments as nested GPU shader stages. This avoids
-  // silently dropping all but the last 16 segments of a Liquify gesture.
   const touches = warp?.strokes ?? [];
   const frozen = warp?.frozen ?? [];
   const stages = warp?.mode === 'push' && touches.length ?
     Array.from({length:Math.ceil(touches.length/16)},(_,i)=>touches.slice(i*16,(i+1)*16)) : [[]];
-  const warpSource = (index:number):React.ReactNode => {
-    if (!warp || !warpEffect || index < 0) return <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />;
-    const group=stages[index];
-    return <Shader source={warpEffect} uniforms={{
-      dimensions:[layer.width,layer.height],center:[warp.centerX,warp.centerY],
-      radius:warp.radius,strength:warp.strength,frequency:warp.frequency,
-      mode:['push','twirl','bulge','wave','mesh'].indexOf(warp.mode),
-      touchCount:group.length,
-      touches:Array.from({length:16},(_,i)=>{const pt=group[i];return pt?[pt.x,pt.y,pt.dx,pt.dy]:[0,0,0,0];}).flat(),
-      freezeCount:Math.min(8,frozen.length),
-      frozen:Array.from({length:8},(_,i)=>{const f=frozen[i];return f?[f.x,f.y,f.radius,0]:[0,0,0,0];}).flat(),
-    }}>{warpSource(index-1)}</Shader>;
-  };
-  const warped = warp && warpEffect ? <Rect x={0} y={0} width={layer.width} height={layer.height}>
-    {warpSource(stages.length-1)}
-  </Rect> : null;
+  const glitch = layer.glitchSettings ?? (layer.glitch ? {mode:3,intensity:layer.glitch,density:0.65,seed:1337} : null);
+  const recolor = layer.colorReplace;
   const adj = layer.adjustments;
-  const hasAdjustments = !!adj && (Math.abs(adj.brightness ?? 0) > 0.0001 || Math.abs(adj.contrast ?? 0) > 0.0001 || Math.abs(adj.saturation ?? 0) > 0.0001);
-  const glitch = layer.glitchSettings ?? (layer.glitch ? { mode: 3, intensity: layer.glitch, density: 0.65, seed: 1337 } : null);
-  const content = glitch && glitch.mode > 0 && glitchEffect ? (
-    <Rect x={0} y={0} width={layer.width} height={layer.height}>
-      <Shader source={glitchEffect} uniforms={{dimensions:[layer.width,layer.height],mode:glitch.mode,intensity:glitch.intensity,density:glitch.density,seed:glitch.seed}}>
-        <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
-      </Shader>
-    </Rect>
-  ) : (
-    <SkiaImage image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill">
-      {hasAdjustments && <ColorMatrix matrix={adjustmentMatrix(adj!.brightness ?? 0, adj!.contrast ?? 0, adj!.saturation ?? 0)} />}
-    </SkiaImage>
-  );
-  const recolor=layer.colorReplace;
-  const recolored = recolor && replaceColorEffect ? <Rect x={0} y={0} width={layer.width} height={layer.height}>
-    <Shader source={replaceColorEffect} uniforms={{sourceColor:rgb(recolor.source),targetColor:rgb(recolor.target),tolerance:recolor.tolerance,softness:recolor.softness,strength:recolor.strength}}>
-      <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
-    </Shader>
-  </Rect> : (warped ?? content);
+  const hasAdjustments = !!adj && (Math.abs(adj.brightness ?? 0)>0.0001 || Math.abs(adj.contrast ?? 0)>0.0001 || Math.abs(adj.saturation ?? 0)>0.0001);
+  const enabled: Record<EffectStage,boolean> = {
+    warp:!!warp && !!warpEffect,
+    glitch:!!glitch && glitch.mode>0 && !!glitchEffect,
+    recolor:!!recolor && !!replaceColorEffect,
+    adjustments:hasAdjustments && !!adjustmentEffect,
+  };
+  const defaultOrder:EffectStage[]=['warp','glitch','recolor','adjustments'];
+  const ordered=[...(layer.effectOrder??defaultOrder),...defaultOrder].filter((stage,i,all)=>all.indexOf(stage)===i && enabled[stage] && !(layer.effectDisabled??[]).includes(stage));
+  // Each stage consumes the previous stage as a shader child. The order is therefore
+  // preserved in the canvas and in snapshots/exports that use this same renderer.
+  let pipeline:React.ReactNode=<ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />;
+  for(const stage of ordered){
+    if(stage==='warp' && warp && warpEffect){
+      for(const group of stages){
+        pipeline=<Shader source={warpEffect} uniforms={{
+          dimensions:[layer.width,layer.height],center:[warp.centerX,warp.centerY],
+          radius:warp.radius,strength:warp.strength,frequency:warp.frequency,
+          mode:['push','twirl','bulge','wave','mesh'].indexOf(warp.mode),
+          touchCount:group.length,
+          touches:Array.from({length:16},(_,i)=>{const pt=group[i];return pt?[pt.x,pt.y,pt.dx,pt.dy]:[0,0,0,0];}).flat(),
+          freezeCount:Math.min(8,frozen.length),
+          frozen:Array.from({length:8},(_,i)=>{const f=frozen[i];return f?[f.x,f.y,f.radius,0]:[0,0,0,0];}).flat(),
+        }}>{pipeline}</Shader>;
+      }
+    }else if(stage==='glitch' && glitch && glitchEffect){
+      pipeline=<Shader source={glitchEffect} uniforms={{dimensions:[layer.width,layer.height],mode:glitch.mode,intensity:glitch.intensity,density:glitch.density,seed:glitch.seed}}>{pipeline}</Shader>;
+    }else if(stage==='recolor' && recolor && replaceColorEffect){
+      pipeline=<Shader source={replaceColorEffect} uniforms={{sourceColor:rgb(recolor.source),targetColor:rgb(recolor.target),tolerance:recolor.tolerance,softness:recolor.softness,strength:recolor.strength}}>{pipeline}</Shader>;
+    }else if(stage==='adjustments' && adj && adjustmentEffect){
+      pipeline=<Shader source={adjustmentEffect} uniforms={{brightness:adj.brightness??0,contrast:adj.contrast??0,saturation:adj.saturation??0}}>{pipeline}</Shader>;
+    }
+  }
+  const recolored=<Rect x={0} y={0} width={layer.width} height={layer.height}>{pipeline}</Rect>;
   const strokes = [...(layer.maskStrokes ?? []), ...(preview ? [preview] : [])];
   const gpu = gpuWand?.layerId === layer.id && wandEffect ? gpuWand : null;
   const gpuMask = gpu ? <Rect x={0} y={0} width={layer.width} height={layer.height}>

@@ -21,6 +21,7 @@ import { saveSticker, type StickerAsset } from '../services/stickerLibrary';
 import { PhotoCanvas, renderStickerBase64, type PhotoCanvasHandle } from '../components/editor/PhotoCanvas';
 import { EditorHeader, EditorToolbar, Sheet, SheetButton, type Tool } from '../components/editor/EditorChrome';
 import { useEditorStore } from '../store/useEditorStore';
+import type { EffectStage } from '../types/editor';
 const GLITCH_NAMES = ['Slice Repeat','Block Displacement','RGB Split','Pixel Sorting','VHS Tracking','Compression Corruption','Datamosh','Data Dropout','Bit Crush','Interlace Error'];
 const FILTER_NAMES = ['Sustituir color','Ninguno','Vibrante','Vintage','Desaturado','Brillante','Dramático','Pastel','Frío','Cálido',...GLITCH_NAMES];
 const colors = ['#18e500','#ffffff','#111111','#25c5ff','#ffe05a','#65e89b'];
@@ -262,7 +263,8 @@ export function EditorScreen() {
     const presets:Record<string,[number,number,number]>={Ninguno:[0,0,0],Vibrante:[.03,.16,.48],Vintage:[.08,-.12,-.38],Desaturado:[0,.06,-1],Brillante:[.18,.08,.12],Dramático:[-.08,.4,-.3],Pastel:[.12,-.18,-.15],Frío:[-.03,.06,-.12],Cálido:[.09,.06,.22]};
     const [brightness,contrast,saturation]=presets[name]||[0,0,0];
     const glitchIndex=GLITCH_NAMES.indexOf(name);
-    update(selected.id,{adjustments:{brightness,contrast,saturation},glitch:0,glitchSettings:glitchIndex<0?undefined:{mode:glitchIndex+1,intensity:0.65,density:0.55,seed:1337}} as any);
+    if(glitchIndex>=0) update(selected.id,{glitch:0,glitchSettings:{mode:glitchIndex+1,intensity:0.65,density:0.55,seed:1337}} as any);
+    else update(selected.id,{adjustments:{brightness,contrast,saturation}} as any);
     setFilterPreset(name);
   };
   const normAngle=(a:number)=>Math.atan2(Math.sin(a),Math.cos(a));
@@ -397,6 +399,27 @@ export function EditorScreen() {
             <MiniButton label="Restablecer deformación" onPress={()=>update(selected.id,{warp:undefined})}/>
           </>;
         })() : <Text style={styles.help}>Selecciona una capa de imagen para deformarla.</Text>}
+      </View>}
+      {tool==='effects' && selected?.type==='image' && <View style={{paddingHorizontal:12,paddingVertical:8,gap:5,borderBottomWidth:1,borderBottomColor:'#343434'}}>
+        <Text style={styles.field}>CADENA DE EFECTOS · orden de procesamiento</Text>
+        {(()=>{
+          const order:EffectStage[]=[...(selected.effectOrder??['warp','glitch','recolor','adjustments'])];
+          const disabled=selected.effectDisabled??[];
+          const labels:Record<EffectStage,string>={warp:'Deformación',glitch:'Glitch',recolor:'Sustituir color',adjustments:'Ajustes de color'};
+          const present:Record<EffectStage,boolean>={warp:!!selected.warp,glitch:!!selected.glitchSettings||!!selected.glitch,recolor:!!selected.colorReplace,adjustments:!!selected.adjustments};
+          return order.filter(k=>present[k]).map(k=>{
+            const pos=order.indexOf(k);
+            const shift=(d:number)=>{const next=[...order],j=pos+d;if(j<0||j>=next.length)return;[next[pos],next[j]]=[next[j],next[pos]];update(selected.id,{effectOrder:next} as any);};
+            const active=!disabled.includes(k);
+            return <View key={k} style={{flexDirection:'row',alignItems:'center',gap:5,minHeight:36}}>
+              <Pressable onPress={()=>update(selected.id,{effectDisabled:active?[...disabled,k]:disabled.filter(x=>x!==k)} as any)} style={{padding:7,backgroundColor:active?'#16491e':'#333',borderRadius:7}}><Feather name={active?'eye':'eye-off'} size={15} color={active?'#18e500':'#aaa'}/></Pressable>
+              <Text style={{color:active?'white':'#888',fontSize:12,flex:1}}>{labels[k]}</Text>
+              <Pressable onPress={()=>shift(-1)} style={{padding:7}}><Feather name="arrow-up" size={17} color="#fff"/></Pressable>
+              <Pressable onPress={()=>shift(1)} style={{padding:7}}><Feather name="arrow-down" size={17} color="#fff"/></Pressable>
+            </View>;
+          });
+        })()}
+        <Text style={{color:'#999',fontSize:10}}>De arriba abajo: el último efecto se aplica sobre el resultado anterior. Ocultar no elimina sus parámetros.</Text>
       </View>}
       {tool==='effects' && <View style={{paddingBottom:16}}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>{['TODOS','COLORES','CÁMARA DIGITAL','ARTÍSTICOS','GLITCH'].map(c=><Pressable key={c} onPress={()=>setFilterCategory(c)} style={{padding:12,borderBottomWidth:filterCategory===c?2:0,borderBottomColor:'#19e500'}}><Text style={{color:filterCategory===c?'#19e500':'white',fontWeight:'600'}}>{c}</Text></Pressable>)}</ScrollView>
