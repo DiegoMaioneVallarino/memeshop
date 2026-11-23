@@ -132,9 +132,168 @@ const glitchEffect = Skia.RuntimeEffect.Make(`
      return half4(clamp(floor((float3(original.rgb) + dither) * levels + 0.5) / levels, float3(0), float3(1)), original.a);
    }
    // 10: interlaced field offset.
-   else {
+   else if (mode < 10.5) {
      float line = floor(xy.y / max(1.0, 5.0 - amount * 4.0));
      uv.x += (mod(line, 2.0) * 2.0 - 1.0) * strength * 30.0;
+   }
+   // 11: recursive tear; repeating and decaying nested source strips.
+   else if (mode < 11.5) {
+     float size = max(3.0, 44.0 - 34.0 * amount);
+     float bandId = floor(xy.y / size);
+     float active = step(1.0 - amount, hash(bandId));
+     float repeatY = floor(mod(xy.y, size) / max(1.0, size / (2.0 + strength * 5.0)));
+     uv.y = mix(xy.y, bandId * size + mod(repeatY * 2.0, size), active);
+     uv.x += active * (hash(bandId + repeatY * 13.0) - 0.5) * strength * 85.0 / (1.0 + repeatY * 0.2);
+   }
+   // 12: tile scramble, deterministic source tile exchange.
+   else if (mode < 12.5) {
+     float tileSize = max(7.0, 96.0 - amount * 79.0);
+     float2 tile = floor(xy / tileSize);
+     float2 local = mod(xy, tileSize);
+     float n = hash(tile.x * 17.0 + tile.y * 79.0);
+     if (n < amount) {
+       float2 offset = floor((float2(hash(n * 31.0), hash(n * 83.0)) - 0.5) * (2.0 + strength * 8.0));
+       float2 swapped = tile + offset;
+       uv = mod(swapped * tileSize + local + dimensions, dimensions);
+     }
+   }
+   // 13: pixel melt, threshold-triggered vertical streaks.
+   else if (mode < 13.5) {
+     float col = floor(xy.x / max(1.0, 12.0 - amount * 10.0));
+     float n = hash(col);
+     if (n < amount && luminance(original) > 0.18) {
+       float distance = 10.0 + strength * 180.0 * hash(col + 4.0);
+       uv.y = xy.y - mod(xy.y + hash(col + 6.0) * distance, max(2.0, distance));
+     }
+   }
+   // 14: echo trails; fixed-number layered source samples.
+   else if (mode < 14.5) {
+     half4 accum = original;
+     float total = 1.0;
+     for (int i = 1; i < 5; i++) {
+       float t = float(i);
+       float weight = amount * 0.55 / t;
+       accum += sampleAt(xy - float2(t * strength * 14.0, t * strength * 5.0)) * half(weight);
+       total += weight;
+     }
+     return accum / half(total);
+   }
+   // 15: memory corruption, repeated fragments from unrelated offsets.
+   else if (mode < 15.5) {
+     float cellH = max(2.0, 25.0 - amount * 21.0);
+     float2 cell = floor(xy / float2(35.0 + strength * 35.0, cellH));
+     float n = hash(cell.x * 91.0 + cell.y * 29.0);
+     if (n < amount) uv = mod(xy + float2((hash(n * 71.0) - 0.5) * dimensions.x * strength, (hash(n * 43.0) - 0.5) * 90.0 * strength) + dimensions, dimensions);
+   }
+   // 16: bit flip, quantized 8-bit channel XOR approximation.
+   else if (mode < 16.5) {
+     float2 cell = floor(xy / max(2.0, 42.0 - 37.0 * amount));
+     float n = hash(cell.x * 37.0 + cell.y * 101.0);
+     if (n < amount) {
+       float3 c = floor(float3(original.rgb) * 255.0 + 0.5);
+       float bitValue = exp2(floor(clamp(strength, 0.0, 1.99) * 3.5));
+       float3 bitOn = mod(floor(c / bitValue), 2.0);
+       c += (1.0 - 2.0 * bitOn) * bitValue;
+       return half4(half3(clamp(c / 255.0, 0.0, 1.0)), original.a);
+     }
+   }
+   // 17: wrong stride, row memory pitch mismatch.
+   else if (mode < 17.5) {
+     float row = floor(xy.y / max(1.0, 6.0 - 5.0 * amount));
+     uv.x = mod(xy.x + row * strength * 6.0 + dimensions.x * 8.0, dimensions.x);
+   }
+   // 18: channel corruption, independent channel permutation and inversion.
+   else if (mode < 18.5) {
+     float2 cell = floor(xy / max(8.0, 75.0 - 65.0 * amount));
+     float n = hash(cell.x * 53.0 + cell.y * 19.0);
+     float3 rgb = float3(original.rgb);
+     float3 swapped = n < 0.33 ? rgb.gbr : (n < 0.66 ? rgb.brg : 1.0 - rgb.bgr);
+     return half4(half3(mix(rgb, swapped, clamp(strength * amount, 0.0, 1.0))), original.a);
+   }
+   // 19: sync loss, displaced and rolling scan bands.
+   else if (mode < 19.5) {
+     float bandSize = max(4.0, 70.0 - 62.0 * amount);
+     float row = floor(xy.y / bandSize);
+     float n = hash(row);
+     uv.x = mod(xy.x + (n - 0.5) * 190.0 * strength * step(1.0 - amount, n) + dimensions.x * 4.0, dimensions.x);
+     uv.y = mod(xy.y + strength * 16.0 * sin(xy.y * 0.025 + seed) + dimensions.y * 4.0, dimensions.y);
+   }
+   // 20: chroma bleed, smearing chrominance while retaining luminance.
+   else if (mode < 20.5) {
+     float3 chroma = float3(0.0);
+     for (int i = 0; i < 5; i++) {
+       float t = float(i) / 4.0;
+       chroma += float3(sampleAt(xy - float2(t * strength * 35.0, 0.0)).rgb) * 0.2;
+     }
+     float luma = luminance(original);
+     float chromaLuma = dot(chroma, float3(0.2126,0.7152,0.0722));
+     return half4(half3(clamp(mix(float3(original.rgb), chroma + (luma - chromaLuma), amount), 0.0, 1.0)), original.a);
+   }
+   // 21: LCD damage, stuck subpixel columns and dead rows.
+   else if (mode < 21.5) {
+     float col = floor(xy.x / max(1.0, 6.0 - 5.0 * amount));
+     float n = hash(col);
+     if (n < amount * 0.5) {
+       float3 mask = float3(step(0.5, hash(col + 1.0)), step(0.5, hash(col + 2.0)), step(0.5, hash(col + 3.0)));
+       return half4(half3(mix(float3(original.rgb), mask, clamp(strength, 0.0, 1.0))), original.a);
+     }
+   }
+   // 22: moire interference, crossed periodic grids.
+   else if (mode < 22.5) {
+     float freq = 0.14 + amount * 1.3;
+     float gridA = sin(xy.x * freq + xy.y * 0.13);
+     float gridB = sin(xy.y * freq * 1.06 - xy.x * 0.08);
+     float interference = gridA * gridB * strength * 0.28;
+     return half4(half3(clamp(float3(original.rgb) + interference, 0.0, 1.0)), original.a);
+   }
+   // 23: Voronoi shatter, nearest jittered site and per-cell translation.
+   else if (mode < 23.5) {
+     float scale = max(12.0, 120.0 - 105.0 * amount);
+     float2 base = floor(xy / scale);
+     float best = 1000.0;
+     float2 winning = base;
+     for (int yy = -1; yy <= 1; yy++) {
+       for (int xx = -1; xx <= 1; xx++) {
+         float2 cell = base + float2(float(xx),float(yy));
+         float n = hash(cell.x * 47.0 + cell.y * 71.0);
+         float2 site = cell + float2(hash(n * 17.0), hash(n * 39.0));
+         float d = length(xy / scale - site);
+         if (d < best) { best = d; winning = cell; }
+       }
+     }
+     float n = hash(winning.x * 47.0 + winning.y * 71.0);
+     uv += (float2(hash(n * 11.0), hash(n * 23.0)) - 0.5) * strength * scale * 1.4;
+   }
+   // 24: recursive feedback, bounded nested scale-and-rotate echoes.
+   else if (mode < 24.5) {
+     half4 accum = original;
+     float total = 1.0;
+     float2 center = dimensions * 0.5;
+     for (int i = 1; i <= 4; i++) {
+       float t = float(i);
+       float angle = t * strength * 0.09;
+       float2 offset = xy - center;
+       float2 rotated = float2(offset.x * cos(angle) - offset.y * sin(angle), offset.x * sin(angle) + offset.y * cos(angle));
+       float2 point = center + rotated / (1.0 + t * strength * 0.13);
+       float weight = amount * 0.7 / t;
+       accum += sampleAt(point) * half(weight);
+       total += weight;
+     }
+     return accum / half(total);
+   }
+   // 25: noise-field warp, smooth deterministic vector noise.
+   else if (mode < 25.5) {
+     float scale = 0.008 + amount * 0.06;
+     float2 cell = floor(xy * scale);
+     float2 f = fract(xy * scale);
+     f = f * f * (3.0 - 2.0 * f);
+     float a = hash(cell.x * 31.0 + cell.y * 79.0);
+     float b = hash((cell.x + 1.0) * 31.0 + cell.y * 79.0);
+     float c = hash(cell.x * 31.0 + (cell.y + 1.0) * 79.0);
+     float d = hash((cell.x + 1.0) * 31.0 + (cell.y + 1.0) * 79.0);
+     float n = mix(mix(a,b,f.x), mix(c,d,f.x), f.y);
+     float n2 = hash(floor(xy.y * scale) * 43.0 + floor(xy.x * scale) * 7.0);
+     uv += (float2(n,n2) - 0.5) * strength * 100.0;
    }
    return sampleAt(uv);
  }

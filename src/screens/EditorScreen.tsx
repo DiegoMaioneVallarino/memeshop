@@ -23,7 +23,14 @@ import { EditorHeader, EditorToolbar, Sheet, SheetButton, type Tool } from '../c
 import { useEditorStore } from '../store/useEditorStore';
 import type { EffectStage } from '../types/editor';
 const GLITCH_NAMES = ['Slice Repeat','Block Displacement','RGB Split','Pixel Sorting','VHS Tracking','Compression Corruption','Datamosh','Data Dropout','Bit Crush','Interlace Error'];
-const FILTER_NAMES = ['Sustituir color','Ninguno','Vibrante','Vintage','Desaturado','Brillante','Dramático','Pastel','Frío','Cálido',...GLITCH_NAMES];
+const GLITCH_LAB_GROUPS: Record<string,string[]> = {
+  'ESTRUCTURA':['Recursive Tear','Tile Scramble','Pixel Melt','Echo Trails'],
+  'DATOS':['Memory Corruption','Bit Flip','Wrong Stride','Channel Corruption'],
+  'SEÑAL':['Sync Loss','Chroma Bleed','LCD Damage','Moiré Interference'],
+  'EXPERIMENTAL':['Voronoi Shatter','Recursive Feedback','Noise Field Warp'],
+};
+const ALL_GLITCH_NAMES = [...GLITCH_NAMES,...Object.values(GLITCH_LAB_GROUPS).flat()];
+const FILTER_NAMES = ['Sustituir color','Ninguno','Vibrante','Vintage','Desaturado','Brillante','Dramático','Pastel','Frío','Cálido',...ALL_GLITCH_NAMES];
 const colors = ['#18e500','#ffffff','#111111','#25c5ff','#ffe05a','#65e89b'];
 function MiniButton({ label, onPress }: {label:string;onPress:()=>void}) { return <Pressable onPress={onPress} style={styles.mini}><Text style={styles.miniText}>{label}</Text></Pressable>; }
 export function EditorScreen() {
@@ -262,7 +269,7 @@ export function EditorScreen() {
     if(name==='Sustituir color'){update(selected.id,{colorReplace:{source:replacementSource,target:replacementTarget,tolerance:0.15,softness:0.08,strength:1}} as any);setFilterPreset(name);return;}
     const presets:Record<string,[number,number,number]>={Ninguno:[0,0,0],Vibrante:[.03,.16,.48],Vintage:[.08,-.12,-.38],Desaturado:[0,.06,-1],Brillante:[.18,.08,.12],Dramático:[-.08,.4,-.3],Pastel:[.12,-.18,-.15],Frío:[-.03,.06,-.12],Cálido:[.09,.06,.22]};
     const [brightness,contrast,saturation]=presets[name]||[0,0,0];
-    const glitchIndex=GLITCH_NAMES.indexOf(name);
+    const glitchIndex=ALL_GLITCH_NAMES.indexOf(name);
     if(glitchIndex>=0) update(selected.id,{glitch:0,glitchSettings:{mode:glitchIndex+1,intensity:0.65,density:0.55,seed:1337}} as any);
     else update(selected.id,{adjustments:{brightness,contrast,saturation}} as any);
     setFilterPreset(name);
@@ -422,8 +429,8 @@ export function EditorScreen() {
         <Text style={{color:'#999',fontSize:10}}>De arriba abajo: el último efecto se aplica sobre el resultado anterior. Ocultar no elimina sus parámetros.</Text>
       </View>}
       {tool==='effects' && <View style={{paddingBottom:16}}>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>{['TODOS','COLORES','CÁMARA DIGITAL','ARTÍSTICOS','GLITCH'].map(c=><Pressable key={c} onPress={()=>setFilterCategory(c)} style={{padding:12,borderBottomWidth:filterCategory===c?2:0,borderBottomColor:'#19e500'}}><Text style={{color:filterCategory===c?'#19e500':'white',fontWeight:'600'}}>{c}</Text></Pressable>)}</ScrollView>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>{FILTER_NAMES.filter((n,i)=>filterCategory==='TODOS'||filterCategory==='GLITCH'&&GLITCH_NAMES.includes(n)||filterCategory==='COLORES'&&i<11||filterCategory==='CÁMARA DIGITAL'&&i>=1&&i<7||filterCategory==='ARTÍSTICOS'&&i>=5&&i<11).map(name=><Pressable key={name} onPress={()=>applyFilter(name)} style={{marginRight:9,width:116,alignItems:'center'}}><View style={{width:110,height:76,backgroundColor:GLITCH_NAMES.includes(name)?'#173e29':'#444',borderRadius:12,borderWidth:filterPreset===name?2:0,borderColor:'#19e500',alignItems:'center',justifyContent:'center'}}><Feather name={GLITCH_NAMES.includes(name)?'zap':'image'} size={27} color="white"/></View><Text numberOfLines={2} style={{color:'white',fontSize:11,marginTop:7,textAlign:'center'}}>{name}</Text></Pressable>)}</ScrollView>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{marginBottom:12}}>{['TODOS','COLORES','CÁMARA DIGITAL','ARTÍSTICOS','GLITCH','ESTRUCTURA','DATOS','SEÑAL','EXPERIMENTAL'].map(c=><Pressable key={c} onPress={()=>setFilterCategory(c)} style={{padding:12,borderBottomWidth:filterCategory===c?2:0,borderBottomColor:'#19e500'}}><Text style={{color:filterCategory===c?'#19e500':'white',fontWeight:'600'}}>{c}</Text></Pressable>)}</ScrollView>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>{FILTER_NAMES.filter((n,i)=>filterCategory==='TODOS'||filterCategory==='GLITCH'&&ALL_GLITCH_NAMES.includes(n)||!!GLITCH_LAB_GROUPS[filterCategory]?.includes(n)||filterCategory==='COLORES'&&i<11||filterCategory==='CÁMARA DIGITAL'&&i>=1&&i<7||filterCategory==='ARTÍSTICOS'&&i>=5&&i<11).map(name=><Pressable key={name} onPress={()=>applyFilter(name)} style={{marginRight:9,width:116,alignItems:'center'}}><View style={{width:110,height:76,backgroundColor:ALL_GLITCH_NAMES.includes(name)?'#173e29':'#444',borderRadius:12,borderWidth:filterPreset===name?2:0,borderColor:'#19e500',alignItems:'center',justifyContent:'center'}}><Feather name={ALL_GLITCH_NAMES.includes(name)?'zap':'image'} size={27} color="white"/></View><Text numberOfLines={2} style={{color:'white',fontSize:11,marginTop:7,textAlign:'center'}}>{name}</Text></Pressable>)}</ScrollView>
         {selected?.type==='image' && selected.colorReplace && <View style={{paddingHorizontal:12,paddingTop:12,gap:7}}>
           <Text style={styles.field}>Color original (selecciona uno)</Text>
           <View style={styles.row}>{['#18e500','#ffffff','#111111','#ff304f','#25c5ff','#ffe05a','#0000ff','#ff8800'].map(c=><Pressable key={c} onPress={()=>{setReplacementSource(c);update(selected.id,{colorReplace:{...selected.colorReplace!,source:c}} as any);}} style={{width:29,height:29,borderRadius:15,backgroundColor:c,borderWidth:selected.colorReplace!.source===c?3:1,borderColor:'#aaa'}}/>)}</View>
@@ -438,7 +445,7 @@ export function EditorScreen() {
           <Text style={styles.field}>Densidad · {Math.round(selected.glitchSettings.density*100)}%</Text>
           <Slider minimumValue={0} maximumValue={1} step={0.01} value={selected.glitchSettings.density} onValueChange={v=>update(selected.id,{glitchSettings:{...selected.glitchSettings!,density:v}} as any)} minimumTrackTintColor="#19e500" thumbTintColor="#19e500" />
           <View style={styles.row}><Text style={styles.field}>Patrón #{selected.glitchSettings.seed}</Text><MiniButton label="Variar patrón" onPress={()=>update(selected.id,{glitchSettings:{...selected.glitchSettings!,seed:selected.glitchSettings!.seed+1}} as any)}/><MiniButton label="Quitar glitch" onPress={()=>{update(selected.id,{glitchSettings:undefined,glitch:0} as any);setFilterPreset('Ninguno');}}/></View>
-          <Text style={styles.help}>Pixel Sorting y Datamosh son aproximaciones visuales para fotografías estáticas.</Text>
+          <Text style={styles.help}>Glitch Lab · 25 modos. Los efectos de corrupción y feedback son simulaciones visuales GPU para imágenes estáticas; Pixel Sorting no es un ordenamiento completo. La semilla mantiene estable el patrón.</Text>
         </View>}
         {selected?.type!=='image'&&<Text style={styles.help}>Selecciona una imagen para aplicar filtros.</Text>}
       </View>}
