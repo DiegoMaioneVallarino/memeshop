@@ -290,24 +290,32 @@ function TextContent({ layer }: { layer: TextLayer }) {
   const lineHeight = layer.fontSize * layer.lineHeight;
   const naturalHeight = Math.max(lineHeight, lines.length * lineHeight);
   const scaleY = layer.height / naturalHeight;
-  // Typeface.MakeDefault is absent in react-native-skia 2.14; matchFont is supported on native.
   const font = matchFont({ fontFamily: TEXT_FONT_FAMILIES[layer.fontFamily ?? 'System'] ?? 'Helvetica', fontSize: Math.max(1, layer.fontSize) });
+  const spacing = layer.letterSpacing ?? 0;
+  const measure = (value: string) => font.measureText(value || ' ').width + Math.max(0, Array.from(value).length - 1) * spacing;
+  const widest = Math.max(1, ...lines.map(measure));
+  const scaleX = Math.min(1, layer.width / widest);
   const outline = Math.max(0, layer.strokeWidth ?? 0);
   const shadow = Math.max(0, layer.shadowBlur ?? 0);
-  const widest = Math.max(1, ...lines.map(line => font.measureText(line || ' ').width));
-  const scaleX = Math.min(1, layer.width / widest);
   return <Group transform={[{ scaleX }, { scaleY }]}>
     {lines.map((line, i) => {
-      const content = line || ' ';
-      const measured = font.measureText(content).width;
+      const measured = measure(line);
       const contentWidth = layer.width / scaleX;
       const x = layer.align === 'center' ? (contentWidth - measured) / 2 : layer.align === 'right' ? contentWidth - measured : 0;
       const y = (i + 0.85) * lineHeight;
+      let offset = 0;
+      const chars = Array.from(line || ' ');
       return <Group key={i}>
-        {shadow > 0 && <SkiaText text={content} x={x + shadow * .65} y={y + shadow * .65} font={font} color={layer.shadowColor ?? '#000000'} />}
-        {outline > 0 && <SkiaText text={content} x={x} y={y} font={font} color={layer.strokeColor ?? '#000000'} style="stroke" strokeWidth={outline * 2} strokeJoin="round" />}
-        {layer.highlightColor && <Rect x={x-3} y={y-layer.fontSize} width={measured+6} height={lineHeight} color={layer.highlightColor} opacity={0.5} />}
-        <SkiaText text={content} x={x} y={y} font={font} color={layer.color} />
+        {layer.highlightColor && <Rect x={x-3} y={y-layer.fontSize} width={measured+6} height={lineHeight} color={layer.highlightColor} opacity={layer.highlightOpacity ?? 0.5} />}
+        {chars.map((char, j) => {
+          const charX = x + offset;
+          offset += font.measureText(char).width + spacing;
+          return <Group key={j}>
+            {shadow > 0 && <SkiaText text={char} x={charX + (layer.shadowOffsetX ?? shadow*.65)} y={y + (layer.shadowOffsetY ?? shadow*.65)} font={font} color={layer.shadowColor ?? '#000000'} />}
+            {outline > 0 && <SkiaText text={char} x={charX} y={y} font={font} color={layer.strokeColor ?? '#000000'} style="stroke" strokeWidth={outline * 2} strokeJoin="round" />}
+            <SkiaText text={char} x={charX} y={y} font={font} color={layer.color} />
+          </Group>;
+        })}
       </Group>;
     })}
   </Group>;
