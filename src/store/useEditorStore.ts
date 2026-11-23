@@ -129,7 +129,7 @@ export const useEditorStore = create<State>((set) => ({
     if (!s.document) return s;
     return commit(s, { ...s.document, layers: s.document.layers.map(l => l.id === id && l.type === 'paint' ? { ...l, strokes: [...l.strokes, stroke] } : l) });
   }),
-  appendMaskStroke: (id, stroke) => set(s => !s.document ? s : commit(s, { ...s.document, layers: s.document.layers.map(l => l.id === id && l.type === 'image' ? { ...l, maskStrokes: [...(l.maskStrokes ?? []), stroke] } : l) })),
+  appendMaskStroke: (id, stroke) => set(s => !s.document ? s : commit(s, { ...s.document, layers: s.document.layers.map(l => l.id === id && !l.locked ? { ...l, maskStrokes: [...(l.maskStrokes ?? []), stroke] } : l) })),
   // Selection is UI state, not an undoable edit. No-op when nothing changes so references stay stable.
   select: (id) => set((s) => s.document && s.document.selectedId !== id ? { document: { ...s.document, selectedId: id } } : s),
   update: (id, patch) => set((s) => {

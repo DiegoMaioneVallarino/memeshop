@@ -338,7 +338,14 @@ function LayerContent({ layer, selected, previewMask, previewStroke, images, cro
           if (crop && crop.angle) body = <Group transform={[{ translateX: layer.width / 2 }, { translateY: layer.height / 2 }, { rotate: crop.angle }, { translateX: -layer.width / 2 }, { translateY: -layer.height / 2 }]}>{body}</Group>;
           const projected = (layer.perspectiveX || layer.perspectiveY) ? <Group matrix={perspectiveMatrix(layer.width,layer.height,layer.perspectiveX??0,layer.perspectiveY??0)}>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</Group> : <>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</>;
           return projected;
-        })() : layer.type === 'paint' ? <PaintContent layer={layer} preview={previewStroke} /> : layer.type === 'text' ? <TextContent layer={layer} /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />}
+        })() : (() => {
+          const content = layer.type === 'paint' ? <PaintContent layer={layer} preview={previewStroke} /> : layer.type === 'text' ? <TextContent layer={layer} /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />;
+          const strokes = [...(layer.maskStrokes ?? []), ...(previewMask ? [previewMask] : [])];
+          if (!strokes.length) return content;
+          // Luminance masking is intentional: black strokes remove, white strokes restore.
+          // The white rectangle defines an opaque default mask for every layer type.
+          return <Mask mode="luminance" mask={<Group><Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />{strokes.map(st => <MaskPath key={st.id} stroke={st} />)}</Group>}>{content}</Mask>;
+        })()}
       </Group>
     </Group>
     {selected && <Group>
@@ -483,10 +490,10 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     if (modeRef.current === 'wand') return;
     if (modeRef.current === 'mask') {
       const current = useEditorStore.getState().document;
-      const image = current?.layers.find(l => l.id === current.selectedId && l.type === 'image');
-      if (!image || image.type !== 'image' || image.locked) return;
-      const local = toLocal(d, image);
-      pendingMask.current = { id: image.id, points: [local] };
+      const target = current?.layers.find(l => l.id === current.selectedId);
+      if (!target || target.locked) return;
+      const local = toLocal(d, target);
+      pendingMask.current = { id: target.id, points: [local] };
       beginEdit();
       setPreviewMask(makeMask('preview', [local]));
       return;

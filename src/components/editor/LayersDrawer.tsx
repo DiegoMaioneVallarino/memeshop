@@ -46,6 +46,7 @@ export function LayersDrawer({document,onClose}:{document:EditorDocument;onClose
         <Text style={s.section}>Fusión · {current.name}</Text>
         <Tiny label={BLENDS.find(b=>b.key===(current.blendMode??'srcOver'))?.label+' ▾'} onPress={()=>setBlendOpen(v=>!v)}/>
         {blendOpen&&<View style={s.blends}>{BLENDS.map(b=><Tiny key={b.key} label={b.label} active={(current.blendMode??'srcOver')===b.key} onPress={()=>{update(current.id,{blendMode:b.key});setBlendOpen(false);}}/>)}</View>}
+        <View style={s.groupRow}><Text style={s.section}>Máscara</Text><Text style={s.hint}>{current.maskStrokes?.length ?? 0} trazos</Text>{!!current.maskStrokes?.length && <Tiny label="Limpiar" onPress={()=>update(current.id,{maskStrokes:[]} as any)}/>}</View>
         <View style={s.groupRow}><Text style={s.section}>Opacidad</Text><Tiny label="−" onPress={()=>update(current.id,{opacity:Math.max(0,current.opacity-.1)})}/><Text style={s.hint}>{Math.round(current.opacity*100)}%</Text><Tiny label="+" onPress={()=>update(current.id,{opacity:Math.min(1,current.opacity+.1)})}/></View>
         {current.locked&&<Text style={s.hint}>Capa bloqueada: desbloquéala para editar.</Text>}
       </View>}

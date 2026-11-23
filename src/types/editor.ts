@@ -1,5 +1,5 @@
 export type LayerBlendMode = 'srcOver' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten' | 'difference';
-export type LayerMeta = { locked?: boolean; blendMode?: LayerBlendMode; groupId?: string };
+export type LayerMeta = { locked?: boolean; blendMode?: LayerBlendMode; groupId?: string; maskStrokes?: MaskStroke[] };
 export type MaskStroke = { id: string; points: StrokePoint[]; radius: number; opacity: number; spread: number; restore: boolean; hardness?: number };
 export type ImageLayer = { id: string; type: 'image'; name: string; uri: string; sourceWidth: number; sourceHeight: number; x: number; y: number; width: number; height: number; rotation: number; flipX?: boolean; opacity: number; visible: boolean; perspectiveX?: number; perspectiveY?: number; maskStrokes?: MaskStroke[]; magicMaskUri?: string; adjustments?: PhotoAdjustments; glitch?: number; colorReplace?: { source: string; target: string; tolerance: number; softness: number; strength: number }; glitchSettings?: { mode: number; intensity: number; density: number; seed: number } };
 export type ShapeLayer = { id: string; type: 'shape'; name: string; color: string; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
