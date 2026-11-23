@@ -1,7 +1,7 @@
 import React from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-export type Tool = 'tools' | 'adjust' | 'brush' | 'layers' | 'add' | 'transform' | 'effects' | 'text' | 'stickers' | 'images' | 'mask' | 'crop' | 'rotate' | 'perspective' | 'wand';
+export type Tool = 'tools' | 'adjust' | 'brush' | 'layers' | 'add' | 'transform' | 'effects' | 'text' | 'stickers' | 'images' | 'mask' | 'crop' | 'rotate' | 'perspective' | 'wand' | 'warp';
 const palette = { bg: '#101010', panel: '#191919', text: '#f5f5f5', muted: '#a9a9a9', accent: '#24e500' };
 export function IconAction({ icon, label, onPress, active, disabled }: { icon: React.ComponentProps<typeof Feather>['name']; label?: string; onPress: () => void; active?: boolean; disabled?: boolean }) {
   return <Pressable accessibilityRole="button" accessibilityLabel={label || icon} onPress={onPress} disabled={disabled} style={[styles.action, active && styles.active, disabled && {opacity: .3}]}><Feather name={icon} size={23} color={active ? palette.accent : palette.text}/>{label ? <Text numberOfLines={1} style={[styles.label, active && {color:palette.accent}]}>{label}</Text> : null}</Pressable>;

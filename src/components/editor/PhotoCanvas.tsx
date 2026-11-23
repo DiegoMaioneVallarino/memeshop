@@ -125,6 +125,47 @@ const glitchEffect = Skia.RuntimeEffect.Make(`
  }
 `);
 // Reemplazo cromático suave, calculado en GPU. Conserva luminancia y alfa.
+// GPU inverse texture mapping: document geometry and layer handles never change.
+const warpEffect = Skia.RuntimeEffect.Make(`
+  uniform shader image;
+  uniform float2 dimensions;
+  uniform float2 center;
+  uniform float radius;
+  uniform float strength;
+  uniform float frequency;
+  uniform float mode;
+  half4 main(float2 xy) {
+    float2 uv = xy / max(dimensions, float2(1.0));
+    float2 delta = uv - center;
+    float aspect = dimensions.x / max(dimensions.y, 1.0);
+    float2 metric = float2(delta.x * aspect, delta.y);
+    float dist = length(metric);
+    float r = max(radius, 0.001);
+    float falloff = pow(max(0.0, 1.0 - dist / r), 2.0);
+    float2 sampleUV = uv;
+    if (mode < 0.5) { // Liquify: directional radial push
+      sampleUV -= float2(strength * 0.24 * falloff / max(aspect, 0.01), 0.0);
+    } else if (mode < 1.5) { // Twirl
+      float angle = -strength * 5.0 * falloff;
+      float sn = sin(angle), cs = cos(angle);
+      float2 turned = float2(metric.x * cs - metric.y * sn, metric.x * sn + metric.y * cs);
+      sampleUV = center + float2(turned.x / max(aspect, 0.01), turned.y);
+    } else if (mode < 2.5) { // Bulge / pinch
+      float factor = 1.0 - strength * 0.85 * falloff;
+      sampleUV = center + delta * max(factor, 0.08);
+    } else if (mode < 3.5) { // Ripple waves
+      float wave = sin(dist * frequency * 55.0) * strength * 0.045 * falloff;
+      sampleUV += normalize(delta + float2(0.000001)) * wave;
+    } else { // Parametric mesh: continuous deformation in both axes
+      float wx = sin(uv.y * frequency * 12.56637) * sin(uv.x * 3.14159);
+      float wy = sin(uv.x * frequency * 12.56637) * sin(uv.y * 3.14159);
+      sampleUV += float2(wx, wy) * strength * 0.12 * falloff;
+    }
+    // Transparent outside source instead of repeating edge pixels.
+    if (sampleUV.x < 0.0 || sampleUV.y < 0.0 || sampleUV.x > 1.0 || sampleUV.y > 1.0) return half4(0.0);
+    return image.eval(sampleUV * dimensions);
+  }
+`);
 const replaceColorEffect = Skia.RuntimeEffect.Make(`
  uniform shader source;
  uniform float3 sourceColor;
@@ -212,6 +253,12 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
   if (!image) return null;
   // Attach the color filter to the image's own paint rather than an offscreen
   // Group layer. An offscreen layer with a nested Paint was rendering black on iOS.
+  const warp = layer.warp;
+  const warped = warp && warpEffect ? <Rect x={0} y={0} width={layer.width} height={layer.height}>
+    <Shader source={warpEffect} uniforms={{dimensions:[layer.width,layer.height],center:[warp.centerX,warp.centerY],radius:warp.radius,strength:warp.strength,frequency:warp.frequency,mode:['push','twirl','bulge','wave','mesh'].indexOf(warp.mode)}}>
+      <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
+    </Shader>
+  </Rect> : null;
   const adj = layer.adjustments;
   const hasAdjustments = !!adj && (Math.abs(adj.brightness ?? 0) > 0.0001 || Math.abs(adj.contrast ?? 0) > 0.0001 || Math.abs(adj.saturation ?? 0) > 0.0001);
   const glitch = layer.glitchSettings ?? (layer.glitch ? { mode: 3, intensity: layer.glitch, density: 0.65, seed: 1337 } : null);
@@ -231,7 +278,7 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
     <Shader source={replaceColorEffect} uniforms={{sourceColor:rgb(recolor.source),targetColor:rgb(recolor.target),tolerance:recolor.tolerance,softness:recolor.softness,strength:recolor.strength}}>
       <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
     </Shader>
-  </Rect> : content;
+  </Rect> : (warped ?? content);
   const strokes = [...(layer.maskStrokes ?? []), ...(preview ? [preview] : [])];
   const gpu = gpuWand?.layerId === layer.id && wandEffect ? gpuWand : null;
   const gpuMask = gpu ? <Rect x={0} y={0} width={layer.width} height={layer.height}>
