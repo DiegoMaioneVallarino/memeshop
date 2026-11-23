@@ -8,7 +8,7 @@ import { useEditorStore } from '../../store/useEditorStore';
 import { getMemMask, isMemMask, loadMaskImage } from '../../services/maskStore';
 
 export type PhotoCanvasHandle = { snapshotBase64: () => Promise<string | null>; sampleColors: () => Promise<string[]>; reset: () => void };
-export type InteractionMode = 'layer' | 'view' | 'brush' | 'mask' | 'eyedropper' | 'wand';
+export type InteractionMode = 'layer' | 'view' | 'brush' | 'mask' | 'eyedropper' | 'wand' | 'warp';
 export type BrushOptions = { color: string; size: number; eraser: boolean; opacity?: number; hardness?: number; spread?: number; restore?: boolean };
 type Viewport = { zoom: number; x: number; y: number; rotation: number };
 const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
@@ -134,6 +134,8 @@ const warpEffect = Skia.RuntimeEffect.Make(`
   uniform float strength;
   uniform float frequency;
   uniform float mode;
+  uniform float4 touches[16];
+  uniform float touchCount;
   half4 main(float2 xy) {
     float2 uv = xy / max(dimensions, float2(1.0));
     float2 delta = uv - center;
@@ -144,7 +146,18 @@ const warpEffect = Skia.RuntimeEffect.Make(`
     float falloff = pow(max(0.0, 1.0 - dist / r), 2.0);
     float2 sampleUV = uv;
     if (mode < 0.5) { // Liquify: directional radial push
-      sampleUV -= float2(strength * 0.24 * falloff / max(aspect, 0.01), 0.0);
+      if (touchCount > 0.5) {
+        // Each touch is a brush segment: xy and displacement in normalized image space.
+        for (int i=0; i<16; i++) {
+          if (float(i) >= touchCount) break;
+          float4 touch = touches[i];
+          float2 dd = (uv-touch.xy)*float2(aspect,1.0);
+          float weight = pow(max(0.0,1.0-length(dd)/r),2.0);
+          sampleUV -= touch.zw * weight * abs(strength);
+        }
+      } else {
+        sampleUV -= float2(strength * 0.24 * falloff / max(aspect, 0.01), 0.0);
+      }
     } else if (mode < 1.5) { // Twirl
       float angle = -strength * 5.0 * falloff;
       float sn = sin(angle), cs = cos(angle);
@@ -255,7 +268,7 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
   // Group layer. An offscreen layer with a nested Paint was rendering black on iOS.
   const warp = layer.warp;
   const warped = warp && warpEffect ? <Rect x={0} y={0} width={layer.width} height={layer.height}>
-    <Shader source={warpEffect} uniforms={{dimensions:[layer.width,layer.height],center:[warp.centerX,warp.centerY],radius:warp.radius,strength:warp.strength,frequency:warp.frequency,mode:['push','twirl','bulge','wave','mesh'].indexOf(warp.mode)}}>
+    <Shader source={warpEffect} uniforms={{dimensions:[layer.width,layer.height],center:[warp.centerX,warp.centerY],radius:warp.radius,strength:warp.strength,frequency:warp.frequency,mode:['push','twirl','bulge','wave','mesh'].indexOf(warp.mode),touchCount:Math.min(16,warp.strokes?.length??0),touches:Array.from({length:16},(_,i)=>{const p=warp.strokes?.[i];return p?[p.x,p.y,p.dx,p.dy]:[0,0,0,0];}).flat()}}>
       <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
     </Shader>
   </Rect> : null;
@@ -488,6 +501,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   onPickRef.current = onPickColor;
   const brushRef = useRef(brush);
   brushRef.current = brush;
+  const warpPointer = useRef<{id:string;last:{x:number;y:number};layer:ImageLayer}|null>(null);
   const pendingStroke = useRef<{ id: string; points: StrokePoint[] } | null>(null);
   const [previewStroke, setPreviewStroke] = useState<BrushStroke | null>(null);
   const [previewMask, setPreviewMask] = useState<MaskStroke | null>(null);
@@ -535,6 +549,15 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     if (active.current) return;
     const d = toDoc(x, y);
     if (modeRef.current === 'wand') return;
+    if (modeRef.current === 'warp') {
+      const current=useEditorStore.getState().document;
+      const layer=current?.layers.find(l=>l.id===current.selectedId);
+      if(layer?.type!=='image'||layer.locked||layer.warp?.mode!=='push') return;
+      const pt=toLocal(d,layer);
+      if(pt.x<0||pt.y<0||pt.x>layer.width||pt.y>layer.height)return;
+      warpPointer.current={id:layer.id,last:{x:pt.x/layer.width,y:pt.y/layer.height},layer};
+      beginEdit();return;
+    }
     if (modeRef.current === 'mask') {
       const current = useEditorStore.getState().document;
       const target = current?.layers.find(l => l.id === current.selectedId);
@@ -599,6 +622,20 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     pending.points.push(p);
     setPreviewStroke(makeStroke('preview', [...pending.points]));
   };
+  const warpDrag=(x:number,y:number)=>{
+    const pointer=warpPointer.current;
+    if(!pointer)return;
+    const layer=useEditorStore.getState().document?.layers.find(l=>l.id===pointer.id);
+    if(layer?.type!=='image'||layer.warp?.mode!=='push')return;
+    const pt=toLocal(toDoc(x,y),layer);
+    const next={x:pt.x/layer.width,y:pt.y/layer.height};
+    const dx=next.x-pointer.last.x,dy=next.y-pointer.last.y;
+    if(Math.hypot(dx,dy)<0.001)return;
+    const point={x:(pointer.last.x+next.x)/2,y:(pointer.last.y+next.y)/2,dx,dy};
+    // Bounded shader workload: retain the 16 most recent brush segments.
+    update(pointer.id,{warp:{...layer.warp,strokes:[...(layer.warp.strokes??[]),point].slice(-16)}});
+    pointer.last=next;
+  };
   const drag = (dx: number, dy: number) => {
     const a = active.current;
     if (!a) return;
@@ -641,6 +678,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     }
   };
   const end = () => {
+    if(warpPointer.current){warpPointer.current=null;finishEdit();}
     if (pendingMask.current) {
       const m = pendingMask.current;
       appendMaskStroke(m.id, makeMask(uid(), m.points));
@@ -730,9 +768,9 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       .onUpdate(e=>samplePicker(e.x,e.y))
       .onEnd(e=>finishPicker(e.x,e.y))
       .onFinalize(()=>{setPickerHud(null);});
-    const oneFinger = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(mode === 'brush' || mode === 'mask' ? 0 : 2)
+    const oneFinger = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(mode === 'brush' || mode === 'mask' || mode === 'warp' ? 0 : 2)
       .onStart(e => { if(mode !== 'eyedropper')begin(e.x - e.translationX, e.y - e.translationY); })
-      .onUpdate(e => { if(mode !== 'eyedropper') mode === 'brush' || mode === 'mask' ? drawAt(e.x, e.y) : drag(e.translationX, e.translationY); })
+      .onUpdate(e => { if(mode !== 'eyedropper') mode === 'warp' ? warpDrag(e.x,e.y) : mode === 'brush' || mode === 'mask' ? drawAt(e.x, e.y) : drag(e.translationX, e.translationY); })
       .onFinalize(end);
     const twoFinger = Gesture.Pan().runOnJS(true).minPointers(2).averageTouches(true)
       .onStart(() => cameraStart())
@@ -742,7 +780,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       .onStart(() => cameraStart())
       .onUpdate(e => cameraUpdate({ scale: e.scale }))
       .onFinalize(() => { camera.current = null; });
-    const tap = Gesture.Tap().runOnJS(true).onEnd(e => { if (mode === 'wand') { const d=toDoc(e.x,e.y); const current=useEditorStore.getState().document; const l=current?.layers.find(v=>v.id===current.selectedId); if(l?.type==='image'){const pt=toLocal(d,l);onWandRef.current?.(pt.x/l.width,pt.y/l.height);} } else if (mode === 'eyedropper') { void readColors({x:e.x,y:e.y}).then(cs=>{if(cs[0])onPickRef.current?.(cs[0]);}); } else if (mode !== 'brush') { begin(e.x, e.y); end(); } });
+    const tap = Gesture.Tap().runOnJS(true).onEnd(e => { if (mode === 'wand') { const d=toDoc(e.x,e.y); const current=useEditorStore.getState().document; const l=current?.layers.find(v=>v.id===current.selectedId); if(l?.type==='image'){const pt=toLocal(d,l);onWandRef.current?.(pt.x/l.width,pt.y/l.height);} } else if (mode === 'eyedropper') { void readColors({x:e.x,y:e.y}).then(cs=>{if(cs[0])onPickRef.current?.(cs[0]);}); } else if (mode !== 'brush' && mode !== 'warp') { begin(e.x, e.y); end(); } });
     return mode==='wand' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),tap) : mode==='eyedropper' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),pickerGesture) : Gesture.Race(Gesture.Simultaneous(twoFinger, pinchGesture), oneFinger, tap);
   }, [mode, document.width, document.height]);
 
