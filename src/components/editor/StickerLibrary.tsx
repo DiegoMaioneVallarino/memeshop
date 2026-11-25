@@ -2,12 +2,13 @@ import React, {useEffect,useState} from 'react';
 import {Alert,Image,Pressable,ScrollView,StyleSheet,Text,TextInput,View} from 'react-native';
 import {Feather} from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
+import {normalizeImage} from '../../services/imageImport';
 import {deleteSticker,getStickers,saveSticker,type StickerAsset} from '../../services/stickerLibrary';
 export function StickerLibrary({onInsert,onClose}:{onInsert:(a:StickerAsset)=>void;onClose:()=>void}){
  const [items,setItems]=useState<StickerAsset[]>([]),[query,setQuery]=useState('');
  const refresh=()=>getStickers().then(setItems).catch(e=>Alert.alert('Biblioteca',String(e)));
  useEffect(()=>{refresh()},[]);
- const importSticker=async()=>{try{const r=await ImagePicker.launchImageLibraryAsync({mediaTypes:['images'],quality:1});if(r.canceled)return;const a=r.assets[0];await saveSticker({uri:a.uri,width:a.width,height:a.height,name:a.fileName??undefined});refresh();}catch(e){Alert.alert('Error al guardar sticker',String(e));}};
+ const importSticker=async()=>{try{const r=await ImagePicker.launchImageLibraryAsync({mediaTypes:['images'],quality:1});if(r.canceled)return;const a=r.assets[0];const n=await normalizeImage({uri:a.uri,width:a.width,height:a.height,mimeType:a.mimeType});await saveSticker({uri:n.uri,width:n.width,height:n.height,name:a.fileName??undefined});refresh();}catch(e){Alert.alert('Error al guardar sticker',String(e));}};
  const remove=(id:string)=>Alert.alert('Eliminar sticker','Se eliminará de la biblioteca, no de los proyectos existentes.',[{text:'Cancelar'},{text:'Eliminar',style:'destructive',onPress:async()=>{await deleteSticker(id);refresh();}}]);
  return <View style={s.root}><View style={s.head}><Text style={s.title}>Mis stickers</Text><Pressable onPress={onClose}><Feather name="x" size={23} color="white"/></Pressable></View><View style={s.search}><Feather name="search" color="#999" size={19}/><TextInput placeholder="Buscar stickers" placeholderTextColor="#999" value={query} onChangeText={setQuery} style={s.input}/></View><Pressable onPress={importSticker} style={s.import}><Feather name="plus" color="white" size={19}/><Text style={s.importText}>Guardar sticker desde galería</Text></Pressable><ScrollView contentContainerStyle={s.grid}>{items.filter(a=>a.name.toLowerCase().includes(query.toLowerCase())).map(a=><View key={a.id} style={s.tile}><Pressable onPress={()=>onInsert(a)}><Image source={{uri:a.uri}} resizeMode="contain" style={s.image}/><Text style={s.name} numberOfLines={1}>{a.name}</Text></Pressable><Pressable onPress={()=>remove(a.id)} style={s.delete}><Feather name="trash-2" size={15} color="white"/></Pressable></View>)}</ScrollView></View>;
 }

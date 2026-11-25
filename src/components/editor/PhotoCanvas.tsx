@@ -1,6 +1,8 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, Text, Keyboard } from 'react-native';
-import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, ColorMatrix, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Text as SkiaText, matchFont } from '@shopify/react-native-skia';
+import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Paragraph, TextAlign, PaintStyle, StrokeJoin } from '@shopify/react-native-skia';
+import { useSharedValue, useDerivedValue, runOnJS } from 'react-native-reanimated';
+import { ensureFonts, fontFamiliesFor, getFontProvider, getFontVersion, subscribeFonts } from '../../services/fonts';
 import type { SkImage } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer, EffectStage } from '../../types/editor';
@@ -540,46 +542,88 @@ function CropOverlay({ width, height, rect }: { width: number; height: number; r
 }
 // Render text with the same Skia scene used by the interactive canvas and PNG export.
 // Font size is expressed in document pixels; resizing the layer scales glyphs proportionally.
-const TEXT_FONT_FAMILIES: Record<string, string> = {
-  System: 'System', Arial: 'Arial', Helvetica: 'Helvetica', Georgia: 'Georgia',
-  Courier: 'Courier New', Times: 'Times New Roman', Impact: 'Impact',
-};
+//
+// Skia Paragraph (antes: un <Text> de Skia por letra, hasta 3 veces por letra):
+//  - Fuentes incluidas en la app (services/fonts.ts): el meme se ve igual en Android y en iOS.
+//  - Kerning, ligaduras, emojis y alfabetos no latinos (fallback automático a las fuentes del sistema).
+//  - Tres párrafos como máximo por capa (sombra/resaltado, contorno, relleno), memorizados: no se reconstruyen
+//    al mover la capa ni al dibujar en otra.
+function useFontsVersion() {
+  const [v, setV] = useState(getFontVersion);
+  useEffect(() => subscribeFonts(() => setV(getFontVersion())), []);
+  return v;
+}
+const ALIGN = { left: TextAlign.Left, center: TextAlign.Center, right: TextAlign.Right } as const;
+function withAlpha(hex: string, alpha: number) {
+  const c = Skia.Color(hex);
+  return Skia.Color(`rgba(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)},${clamp(alpha, 0, 1)})`);
+}
 function TextContent({ layer }: { layer: TextLayer }) {
-  const lines = layer.text.split('\n');
-  const lineHeight = layer.fontSize * layer.lineHeight;
-  const naturalHeight = Math.max(lineHeight, lines.length * lineHeight);
-  const scaleY = layer.height / naturalHeight;
-  const font = matchFont({ fontFamily: TEXT_FONT_FAMILIES[layer.fontFamily ?? 'System'] ?? 'Helvetica', fontSize: Math.max(1, layer.fontSize) });
-  const spacing = layer.letterSpacing ?? 0;
-  const measure = (value: string) => font.measureText(value || ' ').width + Math.max(0, Array.from(value).length - 1) * spacing;
-  const widest = Math.max(1, ...lines.map(measure));
-  const scaleX = Math.min(1, layer.width / widest);
-  const outline = Math.max(0, layer.strokeWidth ?? 0);
-  const shadow = Math.max(0, layer.shadowBlur ?? 0);
+  const fontsVersion = useFontsVersion();
+  const built = useMemo(() => {
+    const provider = getFontProvider() ?? undefined;
+    const families = fontFamiliesFor(layer.fontFamily);
+    const text = layer.text.length ? layer.text : ' ';
+    const outline = Math.max(0, layer.strokeWidth ?? 0);
+    const shadow = Math.max(0, layer.shadowBlur ?? 0);
+    const base = {
+      fontFamilies: families,
+      fontSize: Math.max(1, layer.fontSize),
+      letterSpacing: layer.letterSpacing ?? 0,
+      heightMultiplier: layer.lineHeight,
+      halfLeading: true,
+    };
+    const make = (style: Record<string, unknown>, fg?: ReturnType<typeof Skia.Paint>, bg?: ReturnType<typeof Skia.Paint>) => {
+      const b = Skia.ParagraphBuilder.Make({ textAlign: ALIGN[layer.align] ?? TextAlign.Center }, provider);
+      b.pushStyle({ ...base, ...style } as any, fg, bg);
+      b.addText(text);
+      b.pop();
+      return b.build();
+    };
+    const fill = make({ color: Skia.Color(layer.color) });
+    // Ancho natural sin cortes de línea. Si no cabe, se comprime horizontalmente (igual que antes).
+    fill.layout(1e6);
+    const natural = Math.ceil(fill.getMaxIntrinsicWidth()) + 2;
+    const contentWidth = Math.max(layer.width, natural);
+    fill.layout(contentWidth);
+    let under: ReturnType<typeof make> | null = null;
+    if (shadow > 0 || layer.highlightColor) {
+      let bg: ReturnType<typeof Skia.Paint> | undefined;
+      if (layer.highlightColor) { bg = Skia.Paint(); bg.setColor(withAlpha(layer.highlightColor, layer.highlightOpacity ?? .5)); }
+      const shadows = shadow > 0 ? [{
+        color: Skia.Color(layer.shadowColor ?? '#000000'),
+        offset: { x: layer.shadowOffsetX ?? shadow * .65, y: layer.shadowOffsetY ?? shadow * .65 },
+        blurRadius: shadow * .35,
+      }] : undefined;
+      under = make({ color: Skia.Color(layer.color), shadows }, undefined, bg);
+      under.layout(contentWidth);
+    }
+    let stroke: ReturnType<typeof make> | null = null;
+    if (outline > 0) {
+      const paint = Skia.Paint();
+      paint.setAntiAlias(true);
+      paint.setStyle(PaintStyle.Stroke);
+      paint.setStrokeJoin(StrokeJoin.Round);
+      paint.setStrokeWidth(outline * 2);
+      paint.setColor(Skia.Color(layer.strokeColor ?? '#000000'));
+      stroke = make({}, paint);
+      stroke.layout(contentWidth);
+    }
+    return { fill, under, stroke, contentWidth, height: Math.max(1, fill.getHeight()) };
+  }, [fontsVersion, layer.text, layer.fontFamily, layer.fontSize, layer.letterSpacing, layer.lineHeight, layer.align, layer.color,
+      layer.strokeWidth, layer.strokeColor, layer.shadowBlur, layer.shadowColor, layer.shadowOffsetX, layer.shadowOffsetY,
+      layer.highlightColor, layer.highlightOpacity, layer.width]);
+  const scaleX = layer.width / built.contentWidth;
+  const scaleY = layer.height / built.height;
   return <Group transform={[{ scaleX }, { scaleY }]}>
-    {lines.map((line, i) => {
-      const measured = measure(line);
-      const contentWidth = layer.width / scaleX;
-      const x = layer.align === 'center' ? (contentWidth - measured) / 2 : layer.align === 'right' ? contentWidth - measured : 0;
-      const y = (i + 0.85) * lineHeight;
-      let offset = 0;
-      const chars = Array.from(line || ' ');
-      return <Group key={i}>
-        {layer.highlightColor && <Rect x={x-3} y={y-layer.fontSize} width={measured+6} height={lineHeight} color={layer.highlightColor} opacity={layer.highlightOpacity ?? 0.5} />}
-        {chars.map((char, j) => {
-          const charX = x + offset;
-          offset += font.measureText(char).width + spacing;
-          return <Group key={j}>
-            {shadow > 0 && <SkiaText text={char} x={charX + (layer.shadowOffsetX ?? shadow*.65)} y={y + (layer.shadowOffsetY ?? shadow*.65)} font={font} color={layer.shadowColor ?? '#000000'} />}
-            {outline > 0 && <SkiaText text={char} x={charX} y={y} font={font} color={layer.strokeColor ?? '#000000'} style="stroke" strokeWidth={outline * 2} strokeJoin="round" />}
-            <SkiaText text={char} x={charX} y={y} font={font} color={layer.color} />
-          </Group>;
-        })}
-      </Group>;
-    })}
+    {built.under && <Paragraph paragraph={built.under} x={0} y={0} width={built.contentWidth} />}
+    {built.stroke && <Paragraph paragraph={built.stroke} x={0} y={0} width={built.contentWidth} />}
+    <Paragraph paragraph={built.fill} x={0} y={0} width={built.contentWidth} />
   </Group>;
 }
-function LayerContent({ layer, selected, previewMask, previewStroke, images, cropPreview, gpuWand }: { layer: EditorLayer; selected: boolean; previewMask?: MaskStroke | null; previewStroke?: BrushStroke | null; images?: Record<string, SkImage>; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null }) {
+// React.memo: el documento es inmutable, así que una capa que no cambió conserva la misma referencia y no se
+// vuelve a renderizar cuando se mueve otra capa, se dibuja un trazo o cambia la cámara.
+const LayerContent = React.memo(function LayerContent({ layer, selected, previewMask, previewStroke, images, cropPreview, gpuWand }: { layer: EditorLayer; selected: boolean; previewMask?: MaskStroke | null; previewStroke?: BrushStroke | null; images?: Record<string, SkImage>; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null }) {
   if (!layer.visible) return null;
   const flipX = layer.type === 'image' && !!layer.flipX;
   const transform = [
@@ -622,7 +666,7 @@ function LayerContent({ layer, selected, previewMask, previewStroke, images, cro
         </Group>)}
     </Group>}
   </Group>;
-}
+});
 // Offscreen scene for export: document coordinates only (no viewport, no selection handles), clipped to the document.
 const MAX_EXPORT_SIDE = 4096;
 function ExportScene({ doc, images, scale, transparent = false }: { doc: EditorDocument; images: Record<string, SkImage>; scale: number; transparent?: boolean }) {
@@ -634,6 +678,7 @@ function ExportScene({ doc, images, scale, transparent = false }: { doc: EditorD
   </Group>;
 }
 async function renderDocumentBase64(doc: EditorDocument): Promise<string> {
+  await ensureFonts(); // la exportación nunca debe salir con la fuente de respaldo
   const images: Record<string, SkImage> = {};
   for (const l of doc.layers) {
     if (l.type !== 'image' || !l.visible) continue;
@@ -649,6 +694,7 @@ async function renderDocumentBase64(doc: EditorDocument): Promise<string> {
 }
 /** Exports a single masked image as an actual transparent PNG for the sticker library. */
 export async function renderStickerBase64(layer: ImageLayer): Promise<{ base64: string; width: number; height: number }> {
+  await ensureFonts();
   const width = Math.max(1, Math.round(layer.sourceWidth || layer.width));
   const height = Math.max(1, Math.round(layer.sourceHeight || layer.height));
   const clean: ImageLayer = { ...layer, x: 0, y: 0, width, height, rotation: 0, perspectiveX: 0, perspectiveY: 0, opacity: 1, visible: true };
@@ -688,11 +734,15 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   const lastPickerSample=useRef(0);
 
   const [size, setSize] = useState({ width: 1, height: 1 });
-  const [viewport, setViewport] = useState<Viewport>({ zoom: 1, x: 0, y: 0, rotation: 0 });
-  const vpRef = useRef(viewport);
+  // Cámara en valores compartidos de Reanimated: pellizcar y desplazar con dos dedos corre en el hilo de UI
+  // y Skia lee los valores directamente. Antes cada cuadro hacía setState y React volvía a recorrer todo el lienzo.
+  const camZoom = useSharedValue(1), camX = useSharedValue(0), camY = useSharedValue(0);
+  const panStart = useSharedValue({ x: 0, y: 0 }), zoomStart = useSharedValue(1);
+  const cameraTransform = useDerivedValue(() => [{ translateX: camX.value }, { translateY: camY.value }, { scale: camZoom.value }]);
+  /** Lectura puntual de la cámara desde JS (al empezar un gesto o convertir un toque). */
+  const readVp = (): Viewport => ({ zoom: camZoom.value, x: camX.value, y: camY.value, rotation: 0 });
   const sizeRef = useRef(size);
   const modeRef = useRef(mode);
-  vpRef.current = viewport;
   sizeRef.current = size;
   modeRef.current = mode;
   const onWandRef = useRef(onWandPick); onWandRef.current = onWandPick;
@@ -719,7 +769,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   const offsetY = (size.height - document.height * fit) / 2;
 
   const toDoc = (px: number, py: number) => {
-    const vp = vpRef.current, sz = sizeRef.current;
+    const vp = readVp(), sz = sizeRef.current;
     const dx = px - sz.width / 2 - vp.x, dy = py - sz.height / 2 - vp.y;
     const c = Math.cos(vp.rotation), s = Math.sin(vp.rotation);
     const ux = (dx * c + dy * s) / vp.zoom + sz.width / 2;
@@ -792,7 +842,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       const cx=selected.x+selected.width/2,cy=selected.y+selected.height/2;
       const dx=d.x-cx,dy=d.y-cy,c=Math.cos(selected.rotation),sn=Math.sin(selected.rotation);
       const lx=dx*c+dy*sn+selected.width/2,ly=-dx*sn+dy*c+selected.height/2;
-      const radius=22/Math.max(.15, vpRef.current.zoom * Math.min(sizeRef.current.width/document.width,sizeRef.current.height/document.height));
+      const radius=22/Math.max(.15, readVp().zoom * Math.min(sizeRef.current.width/document.width,sizeRef.current.height/document.height));
       const handles:[string,number,number][]=[
         ['delete',0,0],['rotate',selected.width,0],['uniform',selected.width,selected.height],
         ['n',selected.width/2,0],['e',selected.width,selected.height/2],
@@ -804,8 +854,20 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     const hit = handle ? selected : modeRef.current === 'layer' && current ? hitTest(current.layers, d.x, d.y) : undefined;
     if (modeRef.current === 'layer') select(hit?.id ?? null);
     if (hit && !hit.locked) beginEdit();
-    active.current = { id: hit?.locked ? null : hit?.id ?? null, layer: hit && !hit.locked ? { ...hit } : null, vp: { ...vpRef.current }, lastX: d.x, lastY: d.y, zoom: 1, rotation: 0, changed: false, handle, startPoint:d };
+    active.current = { id: hit?.locked ? null : hit?.id ?? null, layer: hit && !hit.locked ? { ...hit } : null, vp: readVp(), lastX: d.x, lastY: d.y, zoom: 1, rotation: 0, changed: false, handle, startPoint:d };
   };
+  // El dedo genera 120+ eventos por segundo; la vista previa se actualiza como mucho una vez por cuadro.
+  const previewFrame = useRef<number | null>(null);
+  const schedulePreview = () => {
+    if (previewFrame.current !== null) return;
+    previewFrame.current = requestAnimationFrame(() => {
+      previewFrame.current = null;
+      if (pendingMask.current) setPreviewMask(makeMask('preview', pendingMask.current.points.slice()));
+      if (pendingStroke.current) setPreviewStroke(makeStroke('preview', pendingStroke.current.points.slice()));
+    });
+  };
+  const cancelPreviewFrame = () => { if (previewFrame.current !== null) { cancelAnimationFrame(previewFrame.current); previewFrame.current = null; } };
+  useEffect(() => cancelPreviewFrame, []);
   const drawAt = (x: number, y: number) => {
     const mask = pendingMask.current;
     if (mask) {
@@ -815,7 +877,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       const last = mask.points[mask.points.length - 1];
       if (Math.hypot(p.x-last.x, p.y-last.y) < .75) return;
       mask.points.push(p);
-      setPreviewMask(makeMask('preview', [...mask.points]));
+      schedulePreview();
       return;
     }
 
@@ -827,11 +889,11 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     const last = pending.points[pending.points.length - 1];
     if (Math.hypot(p.x-last.x, p.y-last.y) < .75) return;
     pending.points.push(p);
-    setPreviewStroke(makeStroke('preview', [...pending.points]));
+    schedulePreview();
   };
   const warpDrag=(x:number,y:number)=>{
     const currentLayer=useEditorStore.getState().document?.layers.find(l=>l.id===useEditorStore.getState().document?.selectedId);
-    if(currentLayer?.type==='image'&&currentLayer.warp){const scale=Math.min(sizeRef.current.width/document.width,sizeRef.current.height/document.height)*vpRef.current.zoom;setWarpCursor({x,y,radius:currentLayer.warp.radius*Math.min(currentLayer.width,currentLayer.height)*scale});}
+    if(currentLayer?.type==='image'&&currentLayer.warp){const scale=Math.min(sizeRef.current.width/document.width,sizeRef.current.height/document.height)*readVp().zoom;setWarpCursor({x,y,radius:currentLayer.warp.radius*Math.min(currentLayer.width,currentLayer.height)*scale});}
     const pointer=warpPointer.current;
     if(!pointer)return;
     const layer=useEditorStore.getState().document?.layers.find(l=>l.id===pointer.id);
@@ -888,6 +950,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     }
   };
   const end = () => {
+    cancelPreviewFrame();
     if(warpPointer.current){warpPointer.current=null;finishEdit();}
     setWarpCursor(null);
     if (pendingMask.current) {
@@ -908,7 +971,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     if (active.current?.layer) finishEdit();
     active.current = null;
   };
-  const reset = () => { const next = { zoom: 1, x: 0, y: 0, rotation: 0 }; vpRef.current = next; setViewport(next); };
+  const reset = () => { camZoom.value = 1; camX.value = 0; camY.value = 0; };
   const readColors = async (point?:{x:number;y:number}):Promise<string[]> => {
     const image = await canvas.current?.makeImageSnapshotAsync();
     if (!image) return [];
@@ -959,20 +1022,8 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
 
   // One finger edits the selected object (or paints). Two fingers always navigate
   // the camera: midpoint translation + pinch zoom, independent of selected layer.
-  const camera = useRef<{ vp: Viewport; panX: number; panY: number; scale: number } | null>(null);
-  const cameraStart = () => {
-    if (!camera.current) camera.current = { vp: { ...vpRef.current }, panX: 0, panY: 0, scale: 1 };
-    // A second finger must not commit a partial brush stroke as a camera operation.
-    if (active.current) end();
-  };
-  const cameraUpdate = (patch: { panX?: number; panY?: number; scale?: number }) => {
-    const c = camera.current;
-    if (!c) return;
-    Object.assign(c, patch);
-    const next = { ...c.vp, x: c.vp.x + c.panX, y: c.vp.y + c.panY, zoom: clamp(c.vp.zoom * c.scale, .2, 12) };
-    vpRef.current = next;
-    setViewport(next);
-  };
+  // A second finger must not commit a partial brush stroke as a camera operation.
+  const endIfActive = () => { if (active.current || pendingStroke.current || pendingMask.current || warpPointer.current) end(); };
   const gesture = useMemo(() => {
     const pickerGesture = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(0)
       .onStart(e=>{void preparePicker().then(()=>samplePicker(e.x,e.y,true));})
@@ -983,14 +1034,13 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       .onStart(e => { if(mode !== 'eyedropper')begin(e.x - e.translationX, e.y - e.translationY); })
       .onUpdate(e => { if(mode !== 'eyedropper') mode === 'warp' ? warpDrag(e.x,e.y) : mode === 'brush' || mode === 'mask' ? drawAt(e.x, e.y) : drag(e.translationX, e.translationY); })
       .onFinalize(end);
-    const twoFinger = Gesture.Pan().runOnJS(true).minPointers(2).averageTouches(true)
-      .onStart(() => cameraStart())
-      .onUpdate(e => cameraUpdate({ panX: e.translationX, panY: e.translationY }))
-      .onFinalize(() => { camera.current = null; });
-    const pinchGesture = Gesture.Pinch().runOnJS(true)
-      .onStart(() => cameraStart())
-      .onUpdate(e => cameraUpdate({ scale: e.scale }))
-      .onFinalize(() => { camera.current = null; });
+    // Sin runOnJS: estos callbacks son worklets y escriben directamente en los valores compartidos.
+    const twoFinger = Gesture.Pan().minPointers(2).averageTouches(true)
+      .onStart(() => { panStart.value = { x: camX.value, y: camY.value }; runOnJS(endIfActive)(); })
+      .onUpdate(e => { camX.value = panStart.value.x + e.translationX; camY.value = panStart.value.y + e.translationY; });
+    const pinchGesture = Gesture.Pinch()
+      .onStart(() => { zoomStart.value = camZoom.value; runOnJS(endIfActive)(); })
+      .onUpdate(e => { camZoom.value = Math.max(.2, Math.min(12, zoomStart.value * e.scale)); });
     const tap = Gesture.Tap().runOnJS(true).onEnd(e => { if (mode === 'wand') { const d=toDoc(e.x,e.y); const current=useEditorStore.getState().document; const l=current?.layers.find(v=>v.id===current.selectedId); if(l?.type==='image'){const pt=toLocal(d,l);onWandRef.current?.(pt.x/l.width,pt.y/l.height);} } else if (mode === 'eyedropper') { void readColors({x:e.x,y:e.y}).then(cs=>{if(cs[0])onPickRef.current?.(cs[0]);}); } else if (mode !== 'brush' && mode !== 'warp') { begin(e.x, e.y); end(); } });
     return mode==='wand' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),tap) : mode==='eyedropper' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),pickerGesture) : Gesture.Race(Gesture.Simultaneous(twoFinger, pinchGesture), oneFinger, tap);
   }, [mode, document.width, document.height]);
@@ -1005,10 +1055,10 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   return <GestureDetector gesture={gesture}>
     <View style={styles.root} onLayout={e => { if (!keyboardVisible.current) setSize({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height }); }}>
       <Canvas ref={canvas} style={StyleSheet.absoluteFill}>
-        <Group origin={{ x: size.width / 2, y: size.height / 2 }} transform={[{ translateX: viewport.x }, { translateY: viewport.y }, { scale: viewport.zoom }, { rotate: viewport.rotation }]}>
+        <Group origin={{ x: size.width / 2, y: size.height / 2 }} transform={cameraTransform}>
           <Group transform={[{ translateX: offsetX }, { translateY: offsetY }, { scale: fit }]}>
             <Rect x={0} y={0} width={document.width} height={document.height} color="#ffffff" />
-            {document.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} previewMask={mode === 'mask' && layer.id === document.selectedId ? previewMask : null} previewStroke={mode === 'brush' && layer.id === document.selectedId ? previewStroke : null} cropPreview={cropPreview} gpuWand={gpuWand} />)}
+            {document.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} previewMask={mode === 'mask' && layer.id === document.selectedId ? previewMask : null} previewStroke={mode === 'brush' && layer.id === document.selectedId ? previewStroke : null} cropPreview={cropPreview?.layerId === layer.id ? cropPreview : null} gpuWand={gpuWand?.layerId === layer.id ? gpuWand : null} />)}
           </Group>
         </Group>
       </Canvas>

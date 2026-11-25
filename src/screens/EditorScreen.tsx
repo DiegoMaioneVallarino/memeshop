@@ -1,8 +1,11 @@
 import { createMagicMask } from '../services/magicWand';
 import React, { useRef, useState, useEffect } from 'react';
-import { ActivityIndicator, Alert, Share, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, Image, useWindowDimensions, TextInput, Keyboard } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View, Image, useWindowDimensions, TextInput, Keyboard } from 'react-native';
 import { ProjectsHome } from './ProjectsHome';
-import { listProjects, persistProject, deleteProject, durableImage, pruneAssets, detachLibraryAssets, migrateLegacyMasks, type SavedProject } from '../services/projects';
+import { listProjects, loadProject, persistProject, deleteProject, durableImage, pruneAssets, detachLibraryAssets, migrateLegacyMasks, migrateLegacyProjects, type ProjectMeta } from '../services/projects';
+import { normalizeImage } from '../services/imageImport';
+import { ensureFonts, FONT_OPTIONS } from '../services/fonts';
+import * as Sharing from 'expo-sharing';
 import { clearMasks, loadMaskImage, registerMask, releaseMask } from '../services/maskStore';
 import { removeBackgroundAuto } from '../services/subject';
 import { cropAndStraighten, cropMaskImage } from '../services/imageCrop';
@@ -37,7 +40,7 @@ export function EditorScreen() {
   const document = useEditorStore(s=>s.document);
   const [home,setHome]=useState(true);
   const [booting,setBooting]=useState(true);
-  const [projects,setProjects]=useState<SavedProject[]>([]);
+  const [projects,setProjects]=useState<ProjectMeta[]>([]);
   const [projectId,setProjectId]=useState<string|null>(null);
   const [projectName,setProjectName]=useState('Proyecto sin título');
   const [crop,setCrop]=useState<CropState>(initialCrop);
@@ -65,7 +68,8 @@ export function EditorScreen() {
   useEffect(()=>{
     let alive=true;
     const start=Date.now();
-    void migrateLegacyMasks().then(()=>listProjects()).then(items=>{if(alive)setProjects(items);}).catch(e=>console.warn('Proyectos:',e?.stack??e)).finally(()=>{
+    void ensureFonts();
+    void migrateLegacyProjects().then(()=>migrateLegacyMasks()).then(()=>listProjects()).then(items=>{if(alive)setProjects(items);}).catch(e=>console.warn('Proyectos:',e?.stack??e)).finally(()=>{
       const delay=Math.max(0,650-(Date.now()-start));
       setTimeout(()=>{if(alive)setBooting(false);},delay);
     });
@@ -76,7 +80,7 @@ export function EditorScreen() {
     const timeout=setTimeout(()=>{void persistProject({id:projectId,name:projectName,updatedAt:Date.now(),document}).then(()=>listProjects().then(setProjects)).catch(e=>console.warn('Autoguardado:',e?.stack??e));},1200);
     return ()=>clearTimeout(timeout);
   },[document,projectId,projectName,home]);
-  const openProject=async(p:SavedProject)=>{let doc=p.document;try{doc=(await detachLibraryAssets(doc)).document;}catch(e){console.warn(e);}clearMasks();useEditorStore.setState({document:doc,past:[],future:[],editBaseline:null});setProjectId(p.id);setProjectName(p.name);setTool(null);setHome(false);};
+  const openProject=async(meta:ProjectMeta)=>{const p=await loadProject(meta.id);if(!p){Alert.alert('Abrir proyecto','No se pudo leer este proyecto. Puede estar dañado.');return;}let doc=p.document;try{doc=(await detachLibraryAssets(doc)).document;}catch(e){console.warn(e);}clearMasks();useEditorStore.setState({document:doc,past:[],future:[],editBaseline:null});setProjectId(p.id);setProjectName(p.name);setTool(null);setHome(false);};
   const newProject=()=>{clearMasks();useEditorStore.getState().resetDocument();setProjectId(String(Date.now()));setProjectName('Proyecto sin título');setHome(false);setTool(null);};
   const goHome=async()=>{if(document&&projectId){await persistProject({id:projectId,name:projectName,updatedAt:Date.now(),document});setProjects(await listProjects());void pruneAssets();}setTool(null);setHome(true);};
 
@@ -117,13 +121,22 @@ export function EditorScreen() {
   async function importImage(replace=false) {
     try { setImageLoading(true); const result=await ImagePicker.launchImageLibraryAsync({mediaTypes:['images'],allowsEditing:false,quality:1});
       if(result.canceled||!result.assets.length)return;
-      const a=result.assets[0];if(!a.width||!a.height)throw new Error('Imagen sin dimensiones');
-      // Normalize HEIC/HEIF and other iPhone formats to a decoder-friendly PNG.
-      const normalized = await ImageManipulator.manipulateAsync(a.uri, [], { format: ImageManipulator.SaveFormat.PNG });
+      const a=result.assets[0];
+      // Limita el lado largo a MAX_WORK_SIDE y convierte HEIC/HEIF; las fotos opacas se guardan como JPEG.
+      const normalized = await normalizeImage({ uri: a.uri, width: a.width, height: a.height, mimeType: a.mimeType });
+      if(!normalized.width||!normalized.height)throw new Error('Imagen sin dimensiones');
       const photo={uri:await durableImage(normalized.uri),width:normalized.width,height:normalized.height,name:a.fileName??undefined};
       beginEdit();
       if(replace){const before=useEditorStore.getState().editBaseline;setPhoto(photo);if(before)useEditorStore.setState({editBaseline:before});setTool('images');}else{addImage(photo);setTool('images');}
     }catch(e){Alert.alert('Error al importar',String(e));}finally{setImageLoading(false);}
+  }
+  // expo-sharing abre la hoja nativa en Android e iOS. Share.share({url}) de React Native solo funciona en iOS:
+  // en Android ignora `url` y no compartía la imagen.
+  async function shareFile(file:string){
+    try{
+      if(!(await Sharing.isAvailableAsync())){Alert.alert('Compartir','Este dispositivo no permite compartir archivos.');return;}
+      await Sharing.shareAsync(file,{mimeType:'image/png',UTI:'public.png',dialogTitle:'Compartir imagen'});
+    }catch(e){Alert.alert('Compartir',String(e));}
   }
   async function exportPreview(){
     if(!document||busy)return;
@@ -137,21 +150,22 @@ export function EditorScreen() {
       await FileSystem.writeAsStringAsync(file,base64,{encoding:FileSystem.EncodingType.Base64});
       const info=await FileSystem.getInfoAsync(file);
       if(!info.exists || !info.size)throw new Error('El archivo PNG quedó vacío.');
+      const share=()=>{void shareFile(file);};
       // iOS can return limited photo access; addOnly/writeOnly is sufficient for export.
       const permission=await MediaLibrary.requestPermissionsAsync(true);
       if(!permission.granted) {
         Alert.alert('Guardar imagen','Sin permiso para añadir fotos. Puedes compartir el PNG.',[
-          {text:'Cancelar'}, {text:'Compartir',onPress:()=>{void Share.share({url:file,message:'Memeshop PNG'});}}
+          {text:'Cancelar'}, {text:'Compartir',onPress:share}
         ]);
         return;
       }
       try {
         await MediaLibrary.saveToLibraryAsync(file);
-        Alert.alert('Guardado','Imagen PNG guardada en Fotos.');
+        Alert.alert('Guardado','Imagen PNG guardada en Fotos.',[{text:'Listo'},{text:'Compartir',onPress:share}]);
       } catch(saveError) {
         setExportError(String(saveError));
         Alert.alert('No se pudo guardar en Fotos','El PNG se generó. Puedes compartirlo o guardarlo desde el menú del sistema.',[
-          {text:'Cerrar'}, {text:'Compartir PNG',onPress:()=>{void Share.share({url:file,message:'Memeshop PNG'});}}
+          {text:'Cerrar'}, {text:'Compartir PNG',onPress:share}
         ]);
       }
     } catch(e) {setExportError(String(e));Alert.alert('Error al exportar',String(e));}
@@ -293,7 +307,9 @@ export function EditorScreen() {
       const angle=cropLocalAngle(crop,!!l.flipX);
       let tmp:string,outW=px.w,outH=px.h;
       if(Math.abs(angle)<1e-4){
-        const r=await ImageManipulator.manipulateAsync(l.uri,[{crop:{originX:px.x,originY:px.y,width:px.w,height:px.h}}],{format:ImageManipulator.SaveFormat.PNG});
+        // Una foto JPEG recortada sigue siendo JPEG; solo las imágenes con transparencia se guardan como PNG.
+        const opaque=/\.jpe?g(\?|$)/i.test(l.uri);
+        const r=await ImageManipulator.manipulateAsync(l.uri,[{crop:{originX:px.x,originY:px.y,width:px.w,height:px.h}}],opaque?{format:ImageManipulator.SaveFormat.JPEG,compress:.92}:{format:ImageManipulator.SaveFormat.PNG});
         tmp=r.uri;outW=r.width;outH=r.height;
       }else{
         tmp=await cropAndStraighten(l.uri,l.width,l.height,frac,angle,px.w,px.h);
@@ -364,16 +380,16 @@ export function EditorScreen() {
           <View style={styles.textOptions}>
             {textTab==='Estilos' && <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:6,alignItems:'center'}}>
               {([
-                {name:'Clásico',color:'#ffffff',fontFamily:'Impact',strokeWidth:Math.max(2,selected.fontSize*.055),strokeColor:'#000000',shadowBlur:0,highlightColor:null,letterSpacing:0},
-                {name:'Minimal',color:'#111111',fontFamily:'Helvetica',strokeWidth:0,shadowBlur:0,highlightColor:null,letterSpacing:0},
-                {name:'Neón',color:'#18e500',fontFamily:'Impact',strokeWidth:Math.max(1,selected.fontSize*.035),strokeColor:'#073b15',shadowBlur:4,shadowColor:'#0a4f12',highlightColor:null,letterSpacing:1},
-                {name:'Subtítulo',color:'#ffffff',fontFamily:'Arial',strokeWidth:1,strokeColor:'#000000',shadowBlur:2,shadowColor:'#000000',highlightColor:'#111111',highlightOpacity:.75,letterSpacing:0},
-                {name:'Retro',color:'#ffe05a',fontFamily:'Georgia',strokeWidth:2,strokeColor:'#e54426',shadowBlur:3,shadowColor:'#000000',highlightColor:null,letterSpacing:2},
+                {name:'Clásico',color:'#ffffff',fontFamily:'Anton',strokeWidth:Math.max(2,selected.fontSize*.055),strokeColor:'#000000',shadowBlur:0,highlightColor:null,letterSpacing:0},
+                {name:'Minimal',color:'#111111',fontFamily:'Montserrat',strokeWidth:0,shadowBlur:0,highlightColor:null,letterSpacing:0},
+                {name:'Neón',color:'#18e500',fontFamily:'Anton',strokeWidth:Math.max(1,selected.fontSize*.035),strokeColor:'#073b15',shadowBlur:4,shadowColor:'#0a4f12',highlightColor:null,letterSpacing:1},
+                {name:'Subtítulo',color:'#ffffff',fontFamily:'Montserrat',strokeWidth:1,strokeColor:'#000000',shadowBlur:2,shadowColor:'#000000',highlightColor:'#111111',highlightOpacity:.75,letterSpacing:0},
+                {name:'Retro',color:'#ffe05a',fontFamily:'Gelasio',strokeWidth:2,strokeColor:'#e54426',shadowBlur:3,shadowColor:'#000000',highlightColor:null,letterSpacing:2},
               ] as const).map(preset=><Pressable key={preset.name} onPress={()=>update(selected.id,{...preset,name:selected.name} as any)} style={styles.fontChip}><Text style={{color:preset.color,fontSize:13,fontWeight:'800'}}>{preset.name}</Text></Pressable>)}
             </ScrollView>}
             {textTab==='Fuente' && <>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:6,alignItems:'center'}}>
-                {['System','Arial','Helvetica','Georgia','Courier','Times','Impact'].map(f=><Pressable key={f} onPress={()=>update(selected.id,{fontFamily:f} as any)} style={[styles.fontChip,(selected.fontFamily??'System')===f&&{borderColor:'#18e500'}]}><Text style={{color:'#fff',fontSize:12}}>{f}</Text></Pressable>)}
+                {FONT_OPTIONS.map(f=><Pressable key={f.id} onPress={()=>update(selected.id,{fontFamily:f.id} as any)} style={[styles.fontChip,(selected.fontFamily??'System')===f.id&&{borderColor:'#18e500'}]}><Text style={{color:'#fff',fontSize:12}}>{f.label}</Text></Pressable>)}
               </ScrollView>
               <View style={styles.textSliderRow}><Text style={styles.textSliderLabel}>Tamaño {Math.round(selected.fontSize)}</Text><Slider style={{flex:1,height:27}} minimumValue={8} maximumValue={Math.max(32,document.width*.24)} step={1} value={selected.fontSize} onValueChange={v=>update(selected.id,{fontSize:v,height:Math.max(1,selected.text.split('\n').length*v*selected.lineHeight)} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/></View>
               <View style={styles.textSliderRow}><Text style={styles.textSliderLabel}>Espacio {Math.round(selected.letterSpacing??0)}</Text><Slider style={{flex:1,height:27}} minimumValue={-2} maximumValue={Math.max(12,selected.fontSize*.15)} step={1} value={selected.letterSpacing??0} onValueChange={v=>update(selected.id,{letterSpacing:v} as any)} minimumTrackTintColor="#18e500" thumbTintColor="#18e500"/></View>
