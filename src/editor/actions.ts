@@ -48,6 +48,7 @@ export function chooseTool(next: Tool) {
   if (next === 'layers') { if (tool) acceptEdit(); ui().set({ layersOpen: !layersOpen }); return; }
   if (next === 'stickers') { if (tool) acceptEdit(); ui().set({ stickersOpen: true }); return; }
   if (next === 'images') { if (tool) acceptEdit(); void importImage(false); return; }
+  if (next === 'templates') { if (tool) acceptEdit(); ui().set({ templatesOpen: true, layersOpen: false }); return; }
   ui().set({ layersOpen: false });
   if (tool === next) { acceptEdit(); return; }
   if (tool) acceptEdit();

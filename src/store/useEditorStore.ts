@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { BrushStroke, EditorDocument, EditorLayer, LayerPatch, MaskStroke, PhotoAsset } from '../types/editor';
-const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+export const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
 const HISTORY_LIMIT = 40;
@@ -37,6 +37,12 @@ type State = {
   setGroupVisibility: (groupId: string, visible: boolean) => void;
   setGroupLocked: (groupId: string, locked: boolean) => void;
   resetDocument: () => void;
+  /** Sustituye el documento entero (plantilla, cambio de lienzo). Es UN paso de historial, o parte de la sesión abierta. */
+  replaceDocument: (document: EditorDocument) => void;
+  /** Sustituye una capa por otra en la misma posición de la pila (p. ej. hueco de plantilla → foto). */
+  replaceLayer: (id: string, layer: EditorLayer) => void;
+  /** Añade varias capas encima y selecciona la última. */
+  appendLayers: (layers: EditorLayer[]) => void;
 };
 
 /**
@@ -176,4 +182,19 @@ export const useEditorStore = create<State>((set) => ({
   setGroupVisibility: (groupId, visible) => set(s => !s.document ? s : commit(s, { ...s.document, layers: s.document.layers.map(l => l.groupId === groupId ? { ...l, visible } : l) })),
   setGroupLocked: (groupId, locked) => set(s => !s.document ? s : commit(s, { ...s.document, layers: s.document.layers.map(l => l.groupId === groupId ? { ...l, locked } : l) })),
   resetDocument: () => { resetCoalesce(); set({ document: null, past: [], future: [], editBaseline: null }); },
+  replaceDocument: (document) => set(s => {
+    if (!s.document) { resetCoalesce(); return { document, past: [], future: [], editBaseline: null }; }
+    return commit(s, document);
+  }),
+  replaceLayer: (id, layer) => set(s => {
+    if (!s.document) return s;
+    const index = s.document.layers.findIndex(l => l.id === id);
+    if (index < 0) return s;
+    const layers = [...s.document.layers]; layers[index] = layer;
+    return commit(s, { ...s.document, layers, selectedId: layer.id });
+  }),
+  appendLayers: (added) => set(s => {
+    if (!s.document || !added.length) return s;
+    return commit(s, { ...s.document, layers: [...s.document.layers, ...added], selectedId: added[added.length - 1].id });
+  }),
 }));

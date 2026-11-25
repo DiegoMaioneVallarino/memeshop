@@ -13,6 +13,7 @@ import { PhotoCanvas, type BrushOptions, type CropPreview, type InteractionMode 
 import { EditorHeader, EditorToolbar, Sheet } from '../components/editor/EditorChrome';
 import { LayersDrawer } from '../components/editor/LayersDrawer';
 import { StickerLibrary } from '../components/editor/StickerLibrary';
+import { TemplateLibrary } from '../components/editor/TemplateLibrary';
 import { MiniButton, theme } from '../components/common/controls';
 import { ToastBar } from '../components/common/overlays';
 import { useEditorStore } from '../store/useEditorStore';
@@ -22,11 +23,15 @@ import { TOOL_PANELS } from '../tools/registry';
 import { wand } from '../tools/wand/wandController';
 import { useKeyboardVisible } from '../editor/useKeyboardVisible';
 import { cropRect, cropLocalAngle, initialCrop } from '../utils/crop';
+import { hasEffects, withoutEffects } from '../utils/compare';
+import { blankDocument, fillPlaceholder } from '../editor/templateActions';
+import type { Tool } from '../store/useUiStore';
 import { acceptEdit, applyCrop, canvasRef, chooseTool, closeTool, discardEdit, exportImage, importImage, insertSticker, openTool, removeBackground } from '../editor/actions';
 
 function useCanvasMode(): InteractionMode {
-  const tool = useUiStore(s => s.tool), picking = useUiStore(s => s.pickingColor);
+  const tool = useUiStore(s => s.tool), picking = useUiStore(s => s.pickingColor), comparing = useUiStore(s => s.comparing);
   const pushWarp = useEditorStore(s => { const l = s.document?.layers.find(v => v.id === s.document?.selectedId); return l?.type === 'image' && l.warp?.mode === 'push'; });
+  if (comparing) return 'view'; // mientras se compara, el lienzo solo se puede mover y acercar
   if (picking) return 'eyedropper';
   if (tool === 'brush') return 'brush';
   if (tool === 'mask') return 'mask';
@@ -55,6 +60,8 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
   const document = useEditorStore(s => s.document);
   const selectedId = useEditorStore(s => s.document?.selectedId ?? null);
   const selectedType = useEditorStore(s => s.document?.layers.find(l => l.id === s.document?.selectedId)?.type);
+  const selectedIsSlot = useEditorStore(s => { const l = s.document?.layers.find(v => v.id === s.document?.selectedId); return l?.type === 'shape' && !!l.placeholder; });
+  const baseline = useEditorStore(s => s.editBaseline);
   const undo = useEditorStore(s => s.undo), redo = useEditorStore(s => s.redo);
   const canUndo = useEditorStore(s => s.past.length > 0), canRedo = useEditorStore(s => s.future.length > 0);
   const editing = useEditorStore(s => !!s.editBaseline);
@@ -62,6 +69,7 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
   const tool = useUiStore(s => s.tool), layersOpen = useUiStore(s => s.layersOpen), stickersOpen = useUiStore(s => s.stickersOpen);
   const busy = useUiStore(s => s.busy), imageLoading = useUiStore(s => s.imageLoading), bgWorking = useUiStore(s => s.bgWorking);
   const picking = useUiStore(s => s.pickingColor), gpuWand = useUiStore(s => s.gpuWand), toast = useUiStore(s => s.toast);
+  const templatesOpen = useUiStore(s => s.templatesOpen), comparing = useUiStore(s => s.comparing);
   const set = useUiStore(s => s.set), setBrush = useUiStore(s => s.setBrush), hideToast = useUiStore(s => s.hideToast);
 
   const mode = useCanvasMode();
@@ -83,8 +91,21 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
     });
   }, []);
 
+  // Antes / después. Con una herramienta abierta, «antes» es el documento al abrirla (el efecto que estás probando);
+  // sin herramienta, es la foto sin ningún efecto de imagen. Solo se calcula mientras el botón está pulsado.
+  const canCompare = editing ? !!baseline && baseline !== document : hasEffects(document);
+  const shown = useMemo(() => (!comparing || !document ? document : editing && baseline ? baseline : withoutEffects(document)),
+    [comparing, document, editing, baseline]);
+  const compare = document ? {
+    label: editing ? 'Ver antes del efecto' : 'Ver original',
+    active: comparing, disabled: !canCompare,
+    onStart: () => set({ comparing: true }), onEnd: () => set({ comparing: false }),
+  } : undefined;
+
   const panel = tool ? TOOL_PANELS[tool] : undefined;
-  const contextual = selectedType === 'shape' ? { id: 'shape' as const, icon: 'square' as const, label: 'Forma' } : null;
+  const contextual = selectedIsSlot ? { id: 'photo' as const, icon: 'image' as const, label: 'Poner foto' }
+    : selectedType === 'shape' ? { id: 'shape' as const, icon: 'square' as const, label: 'Forma' } : null;
+  const onSelectTool = (t: Tool) => { if (t === 'photo') { if (selectedId) void fillPlaceholder(selectedId); return; } chooseTool(t); };
   const isText = tool === 'text';
 
   return <SafeAreaView style={s.root} edges={['top', 'bottom', 'left', 'right']}>
@@ -92,11 +113,11 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
       undo={undo} redo={redo} canUndo={canUndo} canRedo={canRedo} exportImage={() => void exportImage()} busy={busy}
       eraseImage={document && selectedId ? () => { set({ layersOpen: false }); acceptEdit(); useUiStore.getState().setMask({ mode: 'erase' }); openTool('mask'); } : undefined}
       eraseActive={tool === 'mask'}
-      removeBackground={document && selectedType === 'image' ? () => { void removeBackground(); } : undefined} removeBackgroundBusy={bgWorking} />
+      removeBackground={document && selectedType === 'image' ? () => { void removeBackground(); } : undefined} removeBackgroundBusy={bgWorking} compare={compare} />
 
     <View style={s.workspace}>
-      {document
-        ? <PhotoCanvas key={`${document.width}-${document.height}`} ref={canvasRef} document={document} mode={mode} brush={brush}
+      {document && shown
+        ? <PhotoCanvas key={`${shown.width}-${shown.height}`} ref={canvasRef} document={shown} mode={mode} brush={brush}
             gpuWand={tool === 'wand' ? gpuWand : null} cropPreview={cropPreview} onLayerRemoved={onLayerRemoved}
             onWandPick={(x, y) => wand.pick(x, y)}
             onPickColor={color => { setBrush({ color, eraser: false }); set({ pickingColor: false }); }} />
@@ -104,7 +125,10 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
             <Feather name="image" size={48} color="#aaa" />
             <Text style={s.emptyTitle}>Comienza a crear</Text>
             <MiniButton label="Elegir imagen" active onPress={() => void importImage(true)} />
+            <MiniButton label="Usar una plantilla" onPress={() => set({ templatesOpen: true })} />
+            <MiniButton label="Lienzo en blanco 1080×1080" onPress={() => useEditorStore.getState().replaceDocument(blankDocument(1080, 1080))} />
           </View>}
+      {comparing && <View pointerEvents="none" style={s.compareBadge}><Text style={s.compareText}>{editing ? 'ANTES' : 'ORIGINAL'}</Text></View>}
       {document && layersOpen && <LayersDrawer document={document} onClose={() => set({ layersOpen: false })} />}
     </View>
 
@@ -120,9 +144,10 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
       <Text style={{ color: 'white' }}>Mantén pulsado y arrastra el cuentagotas · Toca aquí para cancelar</Text>
     </Pressable>}
     {document && <View style={keyboardOpen && isText ? { opacity: 0 } : undefined}>
-      <EditorToolbar active={layersOpen ? 'layers' : tool} onSelect={chooseTool} contextual={contextual} />
+      <EditorToolbar active={layersOpen ? 'layers' : templatesOpen ? 'templates' : tool} onSelect={onSelectTool} contextual={contextual} />
     </View>}
     {document && stickersOpen && <StickerLibrary onInsert={a => void insertSticker(a)} onClose={() => set({ stickersOpen: false })} />}
+    {templatesOpen && <TemplateLibrary onClose={() => set({ templatesOpen: false })} />}
     {(busy || imageLoading || bgWorking) && <ActivityIndicator color={theme.accent} style={s.busy} />}
     {toast && <ToastBar key={toast.id} message={toast.message} actionLabel={toast.actionLabel} onAction={toast.action} onHide={hideToast} />}
   </SafeAreaView>;
@@ -138,4 +163,6 @@ const s = StyleSheet.create({
   textFloatingKeyboard: { bottom: undefined, top: 0, maxHeight: 110 },
   busy: { position: 'absolute', top: 80, alignSelf: 'center' },
   pickerBanner: { backgroundColor: '#342137', padding: 12, alignItems: 'center' },
+  compareBadge: { position: 'absolute', top: 12, alignSelf: 'center', backgroundColor: 'rgba(0,0,0,.7)', borderRadius: 14, paddingHorizontal: 14, paddingVertical: 6 },
+  compareText: { color: '#fff', fontWeight: '800', letterSpacing: 1.5, fontSize: 12 },
 });

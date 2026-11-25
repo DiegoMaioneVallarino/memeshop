@@ -5,7 +5,8 @@ export type WarpSettings = { mode: 'push' | 'twirl' | 'bulge' | 'wave' | 'mesh';
 export type EffectStage = 'warp' | 'glitch' | 'recolor' | 'adjustments';
 export type ImageLayer = { id: string; type: 'image'; name: string; uri: string; sourceWidth: number; sourceHeight: number; x: number; y: number; width: number; height: number; rotation: number; flipX?: boolean; opacity: number; visible: boolean; perspectiveX?: number; perspectiveY?: number; maskStrokes?: MaskStroke[]; magicMaskUri?: string; adjustments?: PhotoAdjustments; glitch?: number; colorReplace?: { source: string; target: string; tolerance: number; softness: number; strength: number }; warp?: WarpSettings; glitchSettings?: { mode: number; intensity: number; density: number; seed: number }; effectOrder?: EffectStage[]; effectDisabled?: EffectStage[] };
 export type ShapeKind = 'rect' | 'rounded' | 'ellipse';
-export type ShapeLayer = { id: string; type: 'shape'; name: string; color: string; shape?: ShapeKind; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
+/** `placeholder`: hueco de foto de una plantilla. Se dibuja como marco con icono y se sustituye por una imagen con «Poner foto». */
+export type ShapeLayer = { id: string; type: 'shape'; name: string; color: string; shape?: ShapeKind; placeholder?: boolean; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
 export type StrokePoint = { x: number; y: number };
 export type BrushStroke = { id: string; points: StrokePoint[]; color: string; size: number; eraser: boolean; opacity?: number; hardness?: number; spread?: number };
 export type PaintLayer = { id: string; type: 'paint'; name: string; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean; strokes: BrushStroke[] };
@@ -13,7 +14,8 @@ export type PhotoAdjustments = { brightness: number; contrast: number; saturatio
 export type TextLayer = { id: string; type: 'text'; name: string; text: string; color: string; fontSize: number; align: 'left' | 'center' | 'right'; lineHeight: number; fontFamily?: string; letterSpacing?: number; highlightOpacity?: number; shadowOffsetX?: number; shadowOffsetY?: number; strokeWidth?: number; strokeColor?: string; shadowBlur?: number; shadowColor?: string; highlightColor?: string | null; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
 export type EditorLayer = (ImageLayer | ShapeLayer | PaintLayer | TextLayer) & LayerMeta;
 export type PhotoAsset = { uri: string; width: number; height: number; name?: string };
-export type EditorDocument = { width: number; height: number; layers: EditorLayer[]; selectedId: string | null };
+/** `background`: color de fondo del lienzo (por defecto blanco). 'transparent' exporta PNG con transparencia. */
+export type EditorDocument = { width: number; height: number; layers: EditorLayer[]; selectedId: string | null; background?: string };
 export type LayerType = EditorLayer['type'];
 export type LayerOf<T extends LayerType> = Extract<EditorLayer, { type: T }>;
 /**

@@ -1,6 +1,7 @@
 import React from 'react';
 import { View } from 'react-native';
-import { Help, SectionLabel, Segmented, Swatches, ValueSlider } from '../../components/common/controls';
+import { Help, MiniButton, SectionLabel, Segmented, Swatches, ValueSlider } from '../../components/common/controls';
+import { fillPlaceholder } from '../../editor/templateActions';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useUiStore } from '../../store/useUiStore';
 import type { ShapeKind } from '../../types/editor';
@@ -15,6 +16,11 @@ export function ShapePanel() {
   const palette = useUiStore(s => s.palette);
   if (!layer) return <Help>Selecciona una forma para editarla.</Help>;
   const canvasColors = palette.filter(c => !COLORS.includes(c));
+  if (layer.placeholder) return <View style={{ gap: 8, paddingBottom: 8 }}>
+    <Help>Este es un hueco de foto de la plantilla.</Help>
+    <MiniButton label="Poner foto aquí" active onPress={() => void fillPlaceholder(layer.id)} />
+    <MiniButton label="Convertir en forma de color" onPress={() => update(layer.id, { placeholder: false })} />
+  </View>;
   return <View style={{ gap: 8, paddingBottom: 8 }}>
     <Segmented value={layer.shape ?? 'rect'} onChange={shape => update(layer.id, { shape })} options={KINDS} />
     <SectionLabel>Color</SectionLabel>

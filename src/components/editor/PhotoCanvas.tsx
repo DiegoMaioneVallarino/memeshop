@@ -1,6 +1,6 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, Text, Keyboard } from 'react-native';
-import { Canvas, Group, Image as SkiaImage, Rect, RoundedRect, Oval, Path, Circle, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Paragraph, TextAlign, PaintStyle, StrokeJoin, ImageFormat } from '@shopify/react-native-skia';
+import { Canvas, Group, Image as SkiaImage, Rect, RoundedRect, Oval, Path, DashPathEffect, Circle, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Paragraph, TextAlign, PaintStyle, StrokeJoin, ImageFormat } from '@shopify/react-native-skia';
 import { useSharedValue, useDerivedValue, runOnJS } from 'react-native-reanimated';
 import { ensureFonts, fontFamiliesFor, getFontProvider, getFontVersion, subscribeFonts } from '../../services/fonts';
 import type { SkImage, SkPaint, SkTextStyle } from '@shopify/react-native-skia';
@@ -623,7 +623,35 @@ function TextContent({ layer }: { layer: TextLayer }) {
 }
 // React.memo: el documento es inmutable, así que una capa que no cambió conserva la misma referencia y no se
 // vuelve a renderizar cuando se mueve otra capa, se dibuja un trazo o cambia la cámara.
+/** Hueco de foto de una plantilla: marco discontinuo + icono de imagen. Se sustituye con «Poner foto». */
+function PlaceholderContent({ layer }: { layer: ShapeLayer }) {
+  const w = layer.width, h = layer.height, m = Math.min(w, h);
+  const sw = Math.max(2, m / 90), icon = m * .22, cx = w / 2, cy = h / 2;
+  const x0 = cx - icon, y0 = cy - icon * .72, x1 = cx + icon, y1 = cy + icon * .72;
+  const mountains = `M ${x0} ${y1} L ${x0 + icon * .7} ${cy - icon * .05} L ${x0 + icon * 1.15} ${cy + icon * .35} L ${x0 + icon * 1.45} ${cy + icon * .1} L ${x1} ${y1} Z`;
+  return <Group>
+    <Rect x={0} y={0} width={w} height={h} color={layer.color} />
+    <Rect x={sw / 2} y={sw / 2} width={w - sw} height={h - sw} color="rgba(0,0,0,0.28)" style="stroke" strokeWidth={sw}><DashPathEffect intervals={[sw * 5, sw * 3]} /></Rect>
+    <RoundedRect x={x0} y={y0} width={x1 - x0} height={y1 - y0} r={icon * .12} color="rgba(0,0,0,0.35)" style="stroke" strokeWidth={sw * 1.4} />
+    <Path path={mountains} color="rgba(0,0,0,0.35)" />
+    <Circle cx={x1 - icon * .45} cy={y0 + icon * .42} r={icon * .16} color="rgba(0,0,0,0.35)" />
+  </Group>;
+}
+/** Fondo del documento. 'transparent' se muestra como cuadrícula en el editor (no en la exportación). */
+function DocumentBackground({ doc, forExport }: { doc: EditorDocument; forExport?: boolean }) {
+  const bg = doc.background ?? '#ffffff';
+  const checker = useMemo(() => {
+    if (bg !== 'transparent' || forExport) return null;
+    const cell = Math.max(8, Math.round(Math.max(doc.width, doc.height) / 48));
+    let d = '';
+    for (let y = 0; y < doc.height; y += cell) for (let x = ((y / cell) % 2) * cell; x < doc.width; x += cell * 2) d += `M${x} ${y}h${cell}v${cell}h${-cell}Z`;
+    return d;
+  }, [bg, forExport, doc.width, doc.height]);
+  if (bg === 'transparent') return forExport ? null : <Group><Rect x={0} y={0} width={doc.width} height={doc.height} color="#ffffff" />{checker ? <Path path={checker} color="#e3e3e3" /> : null}</Group>;
+  return <Rect x={0} y={0} width={doc.width} height={doc.height} color={bg} />;
+}
 function ShapeContent({ layer }: { layer: ShapeLayer }) {
+  if (layer.placeholder) return <PlaceholderContent layer={layer} />;
   const kind = layer.shape ?? 'rect';
   if (kind === 'ellipse') return <Oval x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />;
   if (kind === 'rounded') return <RoundedRect x={0} y={0} width={layer.width} height={layer.height} r={Math.min(layer.width, layer.height) * .18} color={layer.color} />;
@@ -678,7 +706,7 @@ const MAX_EXPORT_SIDE = 4096;
 function ExportScene({ doc, images, scale, transparent = false }: { doc: EditorDocument; images: Record<string, SkImage>; scale: number; transparent?: boolean }) {
   return <Group transform={[{ scale }]}>
     <Group clip={{ x: 0, y: 0, width: doc.width, height: doc.height }}>
-      {!transparent && <Rect x={0} y={0} width={doc.width} height={doc.height} color="#ffffff" />}
+      {!transparent && <DocumentBackground doc={doc} forExport />}
       {doc.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={false} images={images} />)}
     </Group>
   </Group>;
@@ -714,7 +742,9 @@ export async function renderThumbnailBase64(doc: EditorDocument, maxSide = 480):
     } catch (e) { console.warn('Miniatura: capa omitida', l.name, e); }
   }
   const scale = Math.min(1, maxSide / Math.max(doc.width, doc.height));
-  const out = await drawAsImage(<ExportScene doc={doc} images={images} scale={scale} />, { width: Math.max(1, Math.round(doc.width * scale)), height: Math.max(1, Math.round(doc.height * scale)) });
+  const W = Math.max(1, Math.round(doc.width * scale)), H = Math.max(1, Math.round(doc.height * scale));
+  // JPEG no tiene alfa: un lienzo transparente se muestra sobre blanco en la miniatura.
+  const out = await drawAsImage(<Group><Rect x={0} y={0} width={W} height={H} color="#ffffff" /><ExportScene doc={doc} images={images} scale={scale} /></Group>, { width: W, height: H });
   return out.encodeToBase64(ImageFormat.JPEG, 82);
 }
 /** Exports a single masked image as an actual transparent PNG for the sticker library. */
@@ -1095,7 +1125,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       <Canvas ref={canvas} style={StyleSheet.absoluteFill}>
         <Group origin={{ x: size.width / 2, y: size.height / 2 }} transform={cameraTransform}>
           <Group transform={[{ translateX: offsetX }, { translateY: offsetY }, { scale: fit }]}>
-            <Rect x={0} y={0} width={document.width} height={document.height} color="#ffffff" />
+            <DocumentBackground doc={document} />
             {document.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} previewMask={mode === 'mask' && layer.id === document.selectedId ? previewMask : null} previewStroke={mode === 'brush' && layer.id === document.selectedId ? previewStroke : null} cropPreview={cropPreview?.layerId === layer.id ? cropPreview : null} gpuWand={gpuWand?.layerId === layer.id ? gpuWand : null} />)}
           </Group>
         </Group>

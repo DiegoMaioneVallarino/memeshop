@@ -8,10 +8,10 @@ import { initialCrop, type CropState } from '../utils/crop';
 
 export type Tool =
   | 'tools' | 'adjust' | 'brush' | 'layers' | 'add' | 'transform' | 'effects' | 'text' | 'stickers'
-  | 'images' | 'mask' | 'crop' | 'rotate' | 'perspective' | 'wand' | 'warp' | 'shape';
+  | 'images' | 'mask' | 'crop' | 'rotate' | 'perspective' | 'wand' | 'warp' | 'shape' | 'templates' | 'canvas' | 'photo';
 
 /** Herramientas que abren una sesión de edición (Aplicar / Cancelar en la cabecera). */
-export const EDIT_SESSION_TOOLS: Tool[] = ['effects', 'adjust', 'crop', 'rotate', 'perspective', 'warp', 'transform', 'wand', 'brush', 'mask', 'text', 'shape'];
+export const EDIT_SESSION_TOOLS: Tool[] = ['effects', 'adjust', 'crop', 'rotate', 'perspective', 'warp', 'transform', 'wand', 'brush', 'mask', 'text', 'shape', 'canvas'];
 
 export type TextTab = 'Estilos' | 'Fuente' | 'Trazo' | 'Color' | 'Resaltador' | 'Sombra';
 export type BrushSettings = { color: string; size: number; eraser: boolean; opacity: number; hardness: number; spread: number };
@@ -27,6 +27,10 @@ type UiState = {
   tool: Tool | null;
   layersOpen: boolean;
   stickersOpen: boolean;
+  templatesOpen: boolean;
+  /** Botón de ojo pulsado: el lienzo muestra el «antes». */
+  comparing: boolean;
+  canvasFit: 'fit' | 'fill';
   pickingColor: boolean;
   busy: boolean;
   imageLoading: boolean;
@@ -60,6 +64,9 @@ export const useUiStore = create<UiState>((set) => ({
   tool: null,
   layersOpen: false,
   stickersOpen: false,
+  templatesOpen: false,
+  comparing: false,
+  canvasFit: 'fit',
   pickingColor: false,
   busy: false,
   imageLoading: false,
@@ -84,7 +91,7 @@ export const useUiStore = create<UiState>((set) => ({
   showToast: (toast) => set({ toast: { ...toast, id: ++toastId } }),
   hideToast: () => set({ toast: null }),
   resetForDocument: () => set({
-    tool: null, layersOpen: false, stickersOpen: false, pickingColor: false, crop: initialCrop,
+    tool: null, layersOpen: false, stickersOpen: false, templatesOpen: false, comparing: false, pickingColor: false, crop: initialCrop,
     wandSession: { point: null, layerId: null, working: false }, gpuWand: null, toast: null, filterPreset: 'Ninguno',
   }),
 }));

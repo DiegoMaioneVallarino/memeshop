@@ -2,6 +2,7 @@
 import React from 'react';
 import type { Tool } from '../store/useUiStore';
 import { AdjustPanel } from './adjust/AdjustPanel';
+import { CanvasPanel } from './canvas/CanvasPanel';
 import { BrushPanel, MaskPanel } from './brush/BrushPanels';
 import { GeometryPanel } from './crop/GeometryPanel';
 import { EffectsPanel } from './effects/EffectsPanel';
@@ -28,4 +29,5 @@ export const TOOL_PANELS: Partial<Record<Tool, PanelDef>> = {
   wand: { title: 'Varita mágica', Panel: WandPanel },
   text: { title: 'Texto', Panel: TextPanel },
   shape: { title: 'Forma', Panel: ShapePanel },
+  canvas: { title: 'Tamaño del lienzo', Panel: CanvasPanel },
 };
