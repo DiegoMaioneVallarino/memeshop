@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { BrushStroke, EditorDocument, EditorLayer, MaskStroke, PhotoAsset } from '../types/editor';
+import type { BrushStroke, EditorDocument, EditorLayer, LayerPatch, MaskStroke, PhotoAsset } from '../types/editor';
 const makeId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 const clamp = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
@@ -28,7 +28,7 @@ type State = {
   appendStroke: (id: string, stroke: BrushStroke) => void;
   appendMaskStroke: (id: string, stroke: MaskStroke) => void;
   select: (id: string | null) => void;
-  update: (id: string, patch: Partial<EditorLayer>) => void;
+  update: (id: string, patch: LayerPatch) => void;
   move: (id: string, direction: -1 | 1) => void;
   duplicate: (id: string) => void;
   remove: (id: string) => void;
@@ -108,7 +108,7 @@ export const useEditorStore = create<State>((set) => ({
     if (!s.document) return s;
     const { width, height } = s.document;
     const w = width * .35, h = height * .22;
-    const layer: EditorLayer = { id: makeId(), type: 'shape', name: 'Rectángulo', color: '#a78bfa', x: (width-w)/2, y: (height-h)/2, width: w, height: h, rotation: 0, opacity: 1, visible: true };
+    const layer: EditorLayer = { id: makeId(), type: 'shape', name: 'Forma', color: '#18e500', shape: 'rect', x: (width-w)/2, y: (height-h)/2, width: w, height: h, rotation: 0, opacity: 1, visible: true };
     return commit(s, { ...s.document, layers: [...s.document.layers, layer], selectedId: layer.id });
   }),
   addPaint: () => set(s => {

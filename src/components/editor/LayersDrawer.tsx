@@ -3,6 +3,7 @@ import { Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-nati
 import { Feather } from '@expo/vector-icons';
 import type { EditorDocument, LayerBlendMode } from '../../types/editor';
 import { useEditorStore } from '../../store/useEditorStore';
+import { ValueSlider } from '../common/controls';
 const BLENDS: { key: LayerBlendMode; label: string }[] = [
   {key:'srcOver',label:'Normal'}, {key:'multiply',label:'Multiplicar'}, {key:'screen',label:'Trama'},
   {key:'overlay',label:'Superponer'}, {key:'darken',label:'Oscurecer'}, {key:'lighten',label:'Aclarar'}, {key:'difference',label:'Diferencia'}
@@ -46,8 +47,8 @@ export function LayersDrawer({document,onClose}:{document:EditorDocument;onClose
         <Text style={s.section}>Fusión · {current.name}</Text>
         <Tiny label={BLENDS.find(b=>b.key===(current.blendMode??'srcOver'))?.label+' ▾'} onPress={()=>setBlendOpen(v=>!v)}/>
         {blendOpen&&<View style={s.blends}>{BLENDS.map(b=><Tiny key={b.key} label={b.label} active={(current.blendMode??'srcOver')===b.key} onPress={()=>{update(current.id,{blendMode:b.key});setBlendOpen(false);}}/>)}</View>}
-        <View style={s.groupRow}><Text style={s.section}>Máscara</Text><Text style={s.hint}>{current.maskStrokes?.length ?? 0} trazos</Text>{!!current.maskStrokes?.length && <Tiny label="Limpiar" onPress={()=>update(current.id,{maskStrokes:[]} as any)}/>}</View>
-        <View style={s.groupRow}><Text style={s.section}>Opacidad</Text><Tiny label="−" onPress={()=>update(current.id,{opacity:Math.max(0,current.opacity-.1)})}/><Text style={s.hint}>{Math.round(current.opacity*100)}%</Text><Tiny label="+" onPress={()=>update(current.id,{opacity:Math.min(1,current.opacity+.1)})}/></View>
+        <View style={s.groupRow}><Text style={s.section}>Máscara</Text><Text style={s.hint}>{current.maskStrokes?.length ?? 0} trazos</Text>{!!current.maskStrokes?.length && <Tiny label="Limpiar" onPress={()=>update(current.id,{maskStrokes:[]})}/>}</View>
+        <ValueSlider compact label="Opacidad" value={Math.round(current.opacity*100)} min={0} max={100} onChange={v=>update(current.id,{opacity:v/100})} format={v=>`${Math.round(v)}%`}/>
         {current.locked&&<Text style={s.hint}>Capa bloqueada: desbloquéala para editar.</Text>}
       </View>}
     </ScrollView>

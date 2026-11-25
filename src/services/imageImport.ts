@@ -9,16 +9,12 @@
  */
 import * as ImageManipulator from 'expo-image-manipulator';
 
-/** 4096 es el límite de textura que soportan prácticamente todas las GPU móviles. */
-export const MAX_WORK_SIDE = 4096;
+import { MAX_WORK_SIDE, fitWithin } from '../utils/limits';
+
+export { MAX_WORK_SIDE, fitWithin };
 const JPEG_QUALITY = 0.92;
 
 export type NormalizedImage = { uri: string; width: number; height: number; downscaled: boolean };
-
-export function fitWithin(width: number, height: number, maxSide = MAX_WORK_SIDE) {
-  const k = Math.min(1, maxSide / Math.max(width, height));
-  return { width: Math.max(1, Math.round(width * k)), height: Math.max(1, Math.round(height * k)), scaled: k < 1 };
-}
 
 const mayHaveAlpha = (uri: string, mimeType?: string | null) =>
   /png|webp|gif/i.test(mimeType ?? '') || /\.(png|webp|gif)(\?|$)/i.test(uri);

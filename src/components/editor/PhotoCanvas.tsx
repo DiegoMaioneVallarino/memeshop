@@ -1,11 +1,11 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, Text, Keyboard } from 'react-native';
-import { Canvas, Group, Image as SkiaImage, Rect, Path, Circle, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Paragraph, TextAlign, PaintStyle, StrokeJoin } from '@shopify/react-native-skia';
+import { Canvas, Group, Image as SkiaImage, Rect, RoundedRect, Oval, Path, Circle, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Paragraph, TextAlign, PaintStyle, StrokeJoin, ImageFormat } from '@shopify/react-native-skia';
 import { useSharedValue, useDerivedValue, runOnJS } from 'react-native-reanimated';
 import { ensureFonts, fontFamiliesFor, getFontProvider, getFontVersion, subscribeFonts } from '../../services/fonts';
-import type { SkImage } from '@shopify/react-native-skia';
+import type { SkImage, SkPaint, SkTextStyle } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer, EffectStage } from '../../types/editor';
+import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, ShapeLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer, EffectStage } from '../../types/editor';
 import { useEditorStore } from '../../store/useEditorStore';
 import { getMemMask, isMemMask, loadMaskImage } from '../../services/maskStore';
 
@@ -566,16 +566,16 @@ function TextContent({ layer }: { layer: TextLayer }) {
     const text = layer.text.length ? layer.text : ' ';
     const outline = Math.max(0, layer.strokeWidth ?? 0);
     const shadow = Math.max(0, layer.shadowBlur ?? 0);
-    const base = {
+    const base: SkTextStyle = {
       fontFamilies: families,
       fontSize: Math.max(1, layer.fontSize),
       letterSpacing: layer.letterSpacing ?? 0,
       heightMultiplier: layer.lineHeight,
       halfLeading: true,
     };
-    const make = (style: Record<string, unknown>, fg?: ReturnType<typeof Skia.Paint>, bg?: ReturnType<typeof Skia.Paint>) => {
+    const make = (style: SkTextStyle, fg?: SkPaint, bg?: SkPaint) => {
       const b = Skia.ParagraphBuilder.Make({ textAlign: ALIGN[layer.align] ?? TextAlign.Center }, provider);
-      b.pushStyle({ ...base, ...style } as any, fg, bg);
+      b.pushStyle({ ...base, ...style }, fg, bg);
       b.addText(text);
       b.pop();
       return b.build();
@@ -588,7 +588,7 @@ function TextContent({ layer }: { layer: TextLayer }) {
     fill.layout(contentWidth);
     let under: ReturnType<typeof make> | null = null;
     if (shadow > 0 || layer.highlightColor) {
-      let bg: ReturnType<typeof Skia.Paint> | undefined;
+      let bg: SkPaint | undefined;
       if (layer.highlightColor) { bg = Skia.Paint(); bg.setColor(withAlpha(layer.highlightColor, layer.highlightOpacity ?? .5)); }
       const shadows = shadow > 0 ? [{
         color: Skia.Color(layer.shadowColor ?? '#000000'),
@@ -623,6 +623,12 @@ function TextContent({ layer }: { layer: TextLayer }) {
 }
 // React.memo: el documento es inmutable, así que una capa que no cambió conserva la misma referencia y no se
 // vuelve a renderizar cuando se mueve otra capa, se dibuja un trazo o cambia la cámara.
+function ShapeContent({ layer }: { layer: ShapeLayer }) {
+  const kind = layer.shape ?? 'rect';
+  if (kind === 'ellipse') return <Oval x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />;
+  if (kind === 'rounded') return <RoundedRect x={0} y={0} width={layer.width} height={layer.height} r={Math.min(layer.width, layer.height) * .18} color={layer.color} />;
+  return <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />;
+}
 const LayerContent = React.memo(function LayerContent({ layer, selected, previewMask, previewStroke, images, cropPreview, gpuWand }: { layer: EditorLayer; selected: boolean; previewMask?: MaskStroke | null; previewStroke?: BrushStroke | null; images?: Record<string, SkImage>; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null }) {
   if (!layer.visible) return null;
   const flipX = layer.type === 'image' && !!layer.flipX;
@@ -642,7 +648,7 @@ const LayerContent = React.memo(function LayerContent({ layer, selected, preview
           const projected = (layer.perspectiveX || layer.perspectiveY) ? <Group matrix={perspectiveMatrix(layer.width,layer.height,layer.perspectiveX??0,layer.perspectiveY??0)}>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</Group> : <>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</>;
           return projected;
         })() : (() => {
-          const content = layer.type === 'paint' ? <PaintContent layer={layer} preview={previewStroke} /> : layer.type === 'text' ? <TextContent layer={layer} /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />;
+          const content = layer.type === 'paint' ? <PaintContent layer={layer} preview={previewStroke} /> : layer.type === 'text' ? <TextContent layer={layer} /> : <ShapeContent layer={layer} />;
           const strokes = [...(layer.maskStrokes ?? []), ...(previewMask ? [previewMask] : [])];
           if (!strokes.length) return content;
           // Luminance masking is intentional: black strokes remove, white strokes restore.
@@ -692,6 +698,25 @@ async function renderDocumentBase64(doc: EditorDocument): Promise<string> {
   const out = await drawAsImage(<ExportScene doc={doc} images={images} scale={scale} />, { width: Math.max(1, Math.round(doc.width * scale)), height: Math.max(1, Math.round(doc.height * scale)) });
   return out.encodeToBase64();
 }
+/**
+ * Miniatura para la pantalla de inicio: el mismo render que la exportación, a 480 px de lado largo, en JPEG.
+ * Las imágenes se decodifican ya reducidas por Skia al dibujar; el costo real es leerlas de disco una vez.
+ */
+export async function renderThumbnailBase64(doc: EditorDocument, maxSide = 480): Promise<string> {
+  await ensureFonts();
+  const images: Record<string, SkImage> = {};
+  for (const l of doc.layers) {
+    if (l.type !== 'image' || !l.visible) continue;
+    try {
+      const img = Skia.Image.MakeImageFromEncoded(await Skia.Data.fromURI(l.uri));
+      if (img) images[l.id] = img;
+      if (l.magicMaskUri) { const mask = await loadMaskImage(l.magicMaskUri); if (mask) images[`${l.id}:mask`] = mask; }
+    } catch (e) { console.warn('Miniatura: capa omitida', l.name, e); }
+  }
+  const scale = Math.min(1, maxSide / Math.max(doc.width, doc.height));
+  const out = await drawAsImage(<ExportScene doc={doc} images={images} scale={scale} />, { width: Math.max(1, Math.round(doc.width * scale)), height: Math.max(1, Math.round(doc.height * scale)) });
+  return out.encodeToBase64(ImageFormat.JPEG, 82);
+}
 /** Exports a single masked image as an actual transparent PNG for the sticker library. */
 export async function renderStickerBase64(layer: ImageLayer): Promise<{ base64: string; width: number; height: number }> {
   await ensureFonts();
@@ -725,7 +750,7 @@ function hitTest(layers: EditorLayer[], x: number, y: number): EditorLayer | und
   }
 }
 
-export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocument; mode: InteractionMode; brush?: BrushOptions; onPickColor?: (color:string)=>void; onWandPick?: (x:number,y:number)=>void; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null }>(function PhotoCanvas({ document, mode, gpuWand, brush = { color: '#ff508e', size: 20, eraser: false }, onPickColor, onWandPick, cropPreview }, ref) {
+export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocument; mode: InteractionMode; brush?: BrushOptions; onPickColor?: (color:string)=>void; onWandPick?: (x:number,y:number)=>void; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null; onLayerRemoved?: (name: string, before: EditorDocument) => void }>(function PhotoCanvas({ document, mode, gpuWand, brush = { color: '#ff508e', size: 20, eraser: false }, onPickColor, onWandPick, cropPreview, onLayerRemoved }, ref) {
   const canvas = useRef<React.ElementRef<typeof Canvas>>(null);
   const [pickerHud,setPickerHud]=useState<{x:number;y:number;color:string}|null>(null);
   const pickerCache=useRef<{pixels:Uint8Array|Uint8ClampedArray;width:number;height:number}|null>(null);
@@ -746,6 +771,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   sizeRef.current = size;
   modeRef.current = mode;
   const onWandRef = useRef(onWandPick); onWandRef.current = onWandPick;
+  const onRemovedRef = useRef(onLayerRemoved); onRemovedRef.current = onLayerRemoved;
   const onPickRef = useRef(onPickColor);
   onPickRef.current = onPickColor;
   const brushRef = useRef(brush);
@@ -850,7 +876,11 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       ];
       handle=handles.find(([,hx,hy])=>Math.hypot(lx-hx,ly-hy)<radius)?.[0];
     }
-    if (handle === 'delete' && selected && !selected.locked) { remove(selected.id); return; }
+    // La ✕ ya no borra al tocar: se arma aquí y se borra al soltar sin haber arrastrado (ver end()).
+    if (handle === 'delete' && selected && !selected.locked) {
+      active.current = { id: selected.id, layer: null, vp: readVp(), lastX: d.x, lastY: d.y, zoom: 1, rotation: 0, changed: false, handle, startPoint: d };
+      return;
+    }
     const hit = handle ? selected : modeRef.current === 'layer' && current ? hitTest(current.layers, d.x, d.y) : undefined;
     if (modeRef.current === 'layer') select(hit?.id ?? null);
     if (hit && !hit.locked) beginEdit();
@@ -911,6 +941,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   const drag = (dx: number, dy: number) => {
     const a = active.current;
     if (!a) return;
+    if (a.handle === 'delete') { if (Math.hypot(dx, dy) > 12) a.changed = true; return; } // arrastrar fuera cancela el borrado
     if (modeRef.current === 'layer' && a.layer && a.id) {
       const vp = a.vp, f = Math.min(sizeRef.current.width / document.width, sizeRef.current.height / document.height);
       const c = Math.cos(vp.rotation), s = Math.sin(vp.rotation);
@@ -968,7 +999,14 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       setPreviewStroke(null);
       finishEdit();
     }
-    if (active.current?.layer) finishEdit();
+    const a = active.current;
+    if (a?.handle === 'delete' && a.id && !a.changed) {
+      const before = useEditorStore.getState().document;
+      const victim = before?.layers.find(l => l.id === a.id);
+      remove(a.id);
+      if (before && victim && useEditorStore.getState().document !== before) onRemovedRef.current?.(victim.name, before);
+    }
+    if (a?.layer) finishEdit();
     active.current = null;
   };
   const reset = () => { camZoom.value = 1; camX.value = 0; camY.value = 0; };

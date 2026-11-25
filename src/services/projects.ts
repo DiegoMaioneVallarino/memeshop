@@ -188,7 +188,7 @@ export function pruneAssets(graceSeconds = 30): Promise<number> {
       for (const name of await FileSystem.readDirectoryAsync(dir)) {
         if (keep.has(name)) continue;
         const info = await FileSystem.getInfoAsync(dir + name);
-        const modified = (info as any).modificationTime as number | undefined;
+        const modified = 'modificationTime' in info ? (info.modificationTime as number | undefined) : undefined;
         if (!info.exists || modified === undefined || Date.now() / 1000 - modified < graceSeconds) continue;
         await FileSystem.deleteAsync(dir + name, { idempotent: true }); removed++;
       }
@@ -203,7 +203,7 @@ export function pruneAssets(graceSeconds = 30): Promise<number> {
  */
 export async function detachLibraryAssets(doc: EditorDocument): Promise<{ document: EditorDocument; changed: boolean }> {
   const copies = new Map<string, string>(); let changed = false;
-  const layers = [];
+  const layers: EditorDocument['layers'] = [];
   for (const l of doc.layers) {
     if (l.type === 'image' && l.uri.includes('/stickers/')) {
       try {
@@ -245,4 +245,29 @@ export function migrateLegacyMasks(): Promise<void> {
       for (const n of legacy) await FileSystem.deleteAsync(root + n, { idempotent: true });
     } catch (e) { console.warn('migrateLegacyMasks', e); }
   });
+}
+
+// ---- miniaturas, renombrar, duplicar -------------------------------------------------------------------------
+/** Guarda una miniatura JPEG (base64) en memeshop-assets/. pruneAssets() borra las que ya no usa ningún proyecto. */
+export async function writeThumbnail(base64: string): Promise<string> {
+  const root = FileSystem.documentDirectory + ASSETS_DIR;
+  await FileSystem.makeDirectoryAsync(root, { intermediates: true });
+  const path = `${root}thumb-${Date.now()}-${Math.random().toString(36).slice(2)}.jpg`;
+  await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
+  return path;
+}
+
+export async function renameProject(id: string, name: string): Promise<void> {
+  const p = await loadProject(id);
+  if (!p) throw new Error('No se encontró el proyecto.');
+  await persistProject({ ...p, name: name.trim() || p.name, updatedAt: Date.now() });
+}
+
+/** Copia el documento con otro id. Las imágenes se comparten: pruneAssets solo borra lo que nadie referencia. */
+export async function duplicateProject(id: string): Promise<ProjectMeta> {
+  const p = await loadProject(id);
+  if (!p) throw new Error('No se encontró el proyecto.');
+  const copy: SavedProject = { ...p, id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: `${p.name} (copia)`, updatedAt: Date.now() };
+  await persistProject(copy);
+  return metaOf(copy);
 }
