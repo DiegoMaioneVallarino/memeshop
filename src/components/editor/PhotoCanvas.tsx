@@ -6,7 +6,7 @@ import { ensureFonts, fontFamiliesFor, getFontProvider, getFontVersion, subscrib
 import type { SkImage, SkPaint, SkTextStyle } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import { applyBrush, fieldFrom, fieldToRGBA, serializeField, LIQUIFY_RANGE, type LiquifyMode } from '../../utils/liquify';
-import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, PhotoAdjustments, ShapeLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer, EffectStage } from '../../types/editor';
+import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, PatternLayer, PhotoAdjustments, ShapeLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer, EffectStage } from '../../types/editor';
 import { useEditorStore } from '../../store/useEditorStore';
 import { getMemMask, isMemMask, loadMaskImage } from '../../services/maskStore';
 
@@ -793,6 +793,28 @@ function DocumentBackground({ doc, forExport }: { doc: EditorDocument; forExport
   if (bg === 'transparent') return forExport ? null : <Group><Rect x={0} y={0} width={doc.width} height={doc.height} color="#ffffff" />{checker ? <Path path={checker} color="#e3e3e3" /> : null}</Group>;
   return <Rect x={0} y={0} width={doc.width} height={doc.height} color={bg} />;
 }
+/** Copias de UNA imagen fuente del patrón: la imagen se carga una sola vez para todas. */
+function PatternSourceCopies({ layer, index, preloaded }: { layer: PatternLayer; index: number; preloaded?: SkImage }) {
+  const src = layer.sources[index];
+  const loaded = useImage(preloaded ? null : src?.uri ?? null);
+  const image = preloaded ?? loaded;
+  if (!image || !src) return null;
+  const m = Math.min(layer.width, layer.height), aspect = (src.height || 1) / (src.width || 1);
+  return <Group>
+    {layer.items.map((it, i) => {
+      if (it.src !== index) return null;
+      const w = it.size * m, h = w * aspect;
+      return <Group key={i} transform={[{ translateX: it.x * layer.width }, { translateY: it.y * layer.height }, { rotate: it.rotation }, { scaleX: it.flip ? -1 : 1 }]}>
+        <SkiaImage image={image} x={-w / 2} y={-h / 2} width={w} height={h} fit="fill" />
+      </Group>;
+    })}
+  </Group>;
+}
+function PatternContent({ layer, images }: { layer: PatternLayer; images?: Record<string, SkImage> }) {
+  return <Group clip={{ x: 0, y: 0, width: layer.width, height: layer.height }}>
+    {layer.sources.map((_, i) => <PatternSourceCopies key={i} layer={layer} index={i} preloaded={images?.[`${layer.id}:src:${i}`]} />)}
+  </Group>;
+}
 function ShapeContent({ layer }: { layer: ShapeLayer }) {
   if (layer.placeholder) return <PlaceholderContent layer={layer} />;
   const kind = layer.shape ?? 'rect';
@@ -819,7 +841,7 @@ const LayerContent = React.memo(function LayerContent({ layer, selected, preview
           const projected = (layer.perspectiveX || layer.perspectiveY) ? <Group matrix={perspectiveMatrix(layer.width,layer.height,layer.perspectiveX??0,layer.perspectiveY??0)}>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</Group> : <>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</>;
           return projected;
         })() : (() => {
-          const content = layer.type === 'paint' ? <PaintContent layer={layer} preview={previewStroke} /> : layer.type === 'text' ? <TextContent layer={layer} /> : <ShapeContent layer={layer} />;
+          const content = layer.type === 'pattern' ? <PatternContent layer={layer} images={images} /> : layer.type === 'paint' ? <PaintContent layer={layer} preview={previewStroke} /> : layer.type === 'text' ? <TextContent layer={layer} /> : <ShapeContent layer={layer} />;
           const strokes = [...(layer.maskStrokes ?? []), ...(previewMask ? [previewMask] : [])];
           if (!strokes.length) return content;
           // Luminance masking is intentional: black strokes remove, white strokes restore.
@@ -854,6 +876,16 @@ function ExportScene({ doc, images, scale, transparent = false }: { doc: EditorD
     </Group>
   </Group>;
 }
+/** Precarga las imágenes de patrones (en un render fuera de pantalla useImage no llega a tiempo). */
+async function preloadPatterns(doc: EditorDocument, images: Record<string, SkImage>) {
+  for (const l of doc.layers) {
+    if (l.type !== 'pattern' || !l.visible) continue;
+    for (let i = 0; i < l.sources.length; i++) {
+      try { const img = Skia.Image.MakeImageFromEncoded(await Skia.Data.fromURI(l.sources[i].uri)); if (img) images[`${l.id}:src:${i}`] = img; }
+      catch (e) { console.warn('Patrón: imagen omitida', e); }
+    }
+  }
+}
 async function renderDocumentBase64(doc: EditorDocument): Promise<string> {
   await ensureFonts(); // la exportación nunca debe salir con la fuente de respaldo
   const images: Record<string, SkImage> = {};
@@ -865,6 +897,7 @@ async function renderDocumentBase64(doc: EditorDocument): Promise<string> {
     images[l.id] = img;
     if(l.magicMaskUri){const mask=await loadMaskImage(l.magicMaskUri);if(mask)images[`${l.id}:mask`]=mask;}
   }
+  await preloadPatterns(doc, images);
   const scale = Math.min(1, MAX_EXPORT_SIDE / Math.max(doc.width, doc.height));
   const out = await drawAsImage(<ExportScene doc={doc} images={images} scale={scale} />, { width: Math.max(1, Math.round(doc.width * scale)), height: Math.max(1, Math.round(doc.height * scale)) });
   return out.encodeToBase64();
@@ -884,6 +917,7 @@ export async function renderThumbnailBase64(doc: EditorDocument, maxSide = 480):
       if (l.magicMaskUri) { const mask = await loadMaskImage(l.magicMaskUri); if (mask) images[`${l.id}:mask`] = mask; }
     } catch (e) { console.warn('Miniatura: capa omitida', l.name, e); }
   }
+  await preloadPatterns(doc, images);
   const scale = Math.min(1, maxSide / Math.max(doc.width, doc.height));
   const W = Math.max(1, Math.round(doc.width * scale)), H = Math.max(1, Math.round(doc.height * scale));
   // JPEG no tiene alfa: un lienzo transparente se muestra sobre blanco en la miniatura.
@@ -915,7 +949,8 @@ export async function renderStickerBase64(layer: ImageLayer): Promise<{ base64: 
 function hitTest(layers: EditorLayer[], x: number, y: number): EditorLayer | undefined {
   for (let i = layers.length - 1; i >= 0; i--) {
     const l = layers[i];
-    if (!l.visible || l.opacity === 0 || l.type === 'paint') continue;
+    // Pintura y patrones ocupan todo el lienzo: se seleccionan desde Capas, no tocando el lienzo.
+    if (!l.visible || l.opacity === 0 || l.type === 'paint' || l.type === 'pattern') continue;
     const cx = l.x + l.width / 2, cy = l.y + l.height / 2;
     const dx = x - cx, dy = y - cy, c = Math.cos(l.rotation), s = Math.sin(l.rotation);
     const lx = dx * c + dy * s, ly = -dx * s + dy * c;

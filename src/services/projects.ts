@@ -182,7 +182,10 @@ export function pruneAssets(graceSeconds = 30): Promise<number> {
       const keep = new Set<string>();
       for (const p of projects) {
         if (p.thumbnail) keep.add(baseName(p.thumbnail));
-        for (const l of p.document.layers) if (l.type === 'image') { keep.add(baseName(l.uri)); if (l.magicMaskUri) keep.add(baseName(l.magicMaskUri)); }
+        for (const l of p.document.layers) {
+          if (l.type === 'image') { keep.add(baseName(l.uri)); if (l.magicMaskUri) keep.add(baseName(l.magicMaskUri)); }
+          if (l.type === 'pattern') for (const src of l.sources) keep.add(baseName(src.uri));
+        }
       }
       let removed = 0;
       for (const name of await FileSystem.readDirectoryAsync(dir)) {

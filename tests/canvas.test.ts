@@ -52,3 +52,13 @@ test('comparar quita efectos de imagen pero conserva la composición', () => {
   assert.equal(l.maskStrokes, image.maskStrokes, 'la máscara se conserva');
   assert.equal(orig.layers[1], textLayer, 'las otras capas son las mismas');
 });
+
+test('un fondo de patrón sigue cubriendo todo el lienzo al cambiar el tamaño', () => {
+  const doc: EditorDocument = { width: 1000, height: 1000, selectedId: null, layers: [
+    { id: 'p', type: 'pattern', name: 'Fondo', sources: [], items: [{ src: 0, x: .5, y: .5, size: .2, rotation: 0, flip: false }], x: 0, y: 0, width: 1000, height: 1000, rotation: 0, opacity: 1, visible: true },
+  ] };
+  for (const mode of ['fit', 'fill'] as const) {
+    const l = resizeDocument(doc, 1080, 1920, mode).layers[0];
+    assert.deepEqual([l.x, l.y, l.width, l.height], [0, 0, 1080, 1920], mode);
+  }
+});

@@ -100,3 +100,17 @@ test('dentro de una herramienta se deshace trazo a trazo y Aplicar deja un solo 
   assert.equal(st().sessionPast.length, 0);
   assert.equal(st().document!.layers[0].maskStrokes!.length, 1);
 });
+
+test('insertar al fondo y reemplazar un grupo son un paso cada uno y conservan ids estables', () => {
+  const before = st().past.length;
+  st().insertLayerAt({ id: 'pat', type: 'pattern', name: 'Fondo', sources: [], items: [], x: 0, y: 0, width: 1000, height: 800, rotation: 0, opacity: 1, visible: true }, 0);
+  assert.equal(st().document!.layers[0].id, 'pat');
+  const piece = (i: number) => ({ id: `g-${i}`, type: 'shape' as const, name: `p${i}`, color: '#fff', x: i, y: 0, width: 1, height: 1, rotation: 0, opacity: 1, visible: true });
+  st().replaceGroup('g', [piece(0), piece(1)]);
+  st().replaceGroup('g', [piece(0), piece(1), piece(2)]);
+  const ids = st().document!.layers.filter(l => l.groupId === 'g').map(l => l.id);
+  assert.deepEqual(ids, ['g-0', 'g-1', 'g-2']);
+  assert.equal(st().past.length, before + 3);
+  st().replaceGroup('g', []);
+  assert.equal(st().document!.layers.filter(l => l.groupId === 'g').length, 0);
+});

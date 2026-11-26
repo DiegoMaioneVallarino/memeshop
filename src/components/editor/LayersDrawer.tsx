@@ -43,7 +43,7 @@ export function LayersDrawer({document,onClose}:{document:EditorDocument;onClose
       })}
       {[...document.layers].reverse().map(l=><Pressable key={l.id} onPress={()=>multi?toggle(l.id):select(l.id)} style={[s.item,l.id===document.selectedId&&!multi&&s.active,checked.includes(l.id)&&s.active]}>
         {multi&&<Feather name={checked.includes(l.id)?'check-square':'square'} size={18} color="#1ae520"/>}
-        {l.type==='image'?<Image source={{uri:l.uri}} resizeMode="contain" style={s.thumb}/>:<View style={[s.thumb,s.placeholder]}><Feather name={l.type==='paint'?'edit-3':l.type==='text'?'type':'square'} color="#ddd" size={18}/></View>}
+        {l.type==='image'?<Image source={{uri:l.uri}} resizeMode="contain" style={s.thumb}/>:<View style={[s.thumb,s.placeholder]}><Feather name={l.type==='paint'?'edit-3':l.type==='text'?'type':l.type==='pattern'?'grid':'square'} color="#ddd" size={18}/></View>}
         <View style={s.nameBox}><Text numberOfLines={1} style={s.name}>{l.name}</Text><Text style={s.sub}>{l.groupId?'● Grupo · ':''}{Math.round(l.opacity*100)}% · {BLENDS.find(b=>b.key===(l.blendMode??'srcOver'))?.label}</Text></View>
         <Pressable onPress={()=>update(l.id,{visible:!l.visible})} hitSlop={8}><Feather name={l.visible?'eye':'eye-off'} color="#ddd" size={17}/></Pressable>
         <Pressable onPress={()=>update(l.id,{locked:!l.locked})} hitSlop={8}><Feather name={l.locked?'lock':'unlock'} color={l.locked?'#1ae520':'#aaa'} size={16}/></Pressable>

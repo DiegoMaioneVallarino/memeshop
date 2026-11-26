@@ -50,6 +50,10 @@ type State = {
   replaceLayer: (id: string, layer: EditorLayer) => void;
   /** Añade varias capas encima y selecciona la última. */
   appendLayers: (layers: EditorLayer[]) => void;
+  /** Inserta una capa en una posición de la pila (0 = al fondo). */
+  insertLayerAt: (layer: EditorLayer, index: number) => void;
+  /** Sustituye todas las capas de un grupo por otras (p. ej. «Otra variación» de una composición). Un solo paso. */
+  replaceGroup: (groupId: string, layers: EditorLayer[]) => void;
 };
 
 /**
@@ -217,6 +221,17 @@ export const useEditorStore = create<State>((set) => ({
     if (index < 0) return s;
     const layers = [...s.document.layers]; layers[index] = layer;
     return commit(s, { ...s.document, layers, selectedId: layer.id });
+  }),
+  insertLayerAt: (layer, index) => set(s => {
+    if (!s.document) return s;
+    const layers = [...s.document.layers];
+    layers.splice(Math.max(0, Math.min(layers.length, index)), 0, layer);
+    return commit(s, { ...s.document, layers, selectedId: layer.id });
+  }),
+  replaceGroup: (groupId, added) => set(s => {
+    if (!s.document) return s;
+    const kept = s.document.layers.filter(l => l.groupId !== groupId);
+    return commit(s, { ...s.document, layers: [...kept, ...added.map(l => ({ ...l, groupId }))], selectedId: null });
   }),
   appendLayers: (added) => set(s => {
     if (!s.document || !added.length) return s;

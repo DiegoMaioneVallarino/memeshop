@@ -76,6 +76,7 @@ export function saveTemplate(input: { name: string; kind: TemplateKind; document
     if (input.kind === 'overlay' && doc.layers.length > 1) doc = { ...doc, layers: doc.layers.slice(1) };
     const layers: EditorLayer[] = [];
     for (const l of doc.layers) {
+      if (l.type === 'pattern') { layers.push({ ...l, sources: await Promise.all(l.sources.map(async src => ({ ...src, uri: await copyIntoTemplate(src.uri) }))) }); continue; }
       if (l.type !== 'image') { layers.push(l); continue; }
       const uri = await copyIntoTemplate(l.uri);
       const magicMaskUri = l.magicMaskUri ? await copyIntoTemplate(l.magicMaskUri) : undefined;
@@ -111,7 +112,10 @@ export function deleteTemplate(id: string): Promise<void> {
     const t = await loadTemplate(id);
     const files = new Set<string>();
     if (t?.thumbnail) files.add(t.thumbnail);
-    for (const l of t?.document.layers ?? []) if (l.type === 'image') { files.add(l.uri); if (l.magicMaskUri) files.add(l.magicMaskUri); }
+    for (const l of t?.document.layers ?? []) {
+      if (l.type === 'image') { files.add(l.uri); if (l.magicMaskUri) files.add(l.magicMaskUri); }
+      if (l.type === 'pattern') for (const src of l.sources) files.add(src.uri);
+    }
     for (const f of files) if (f.startsWith(assetsDir())) await FileSystem.deleteAsync(f, { idempotent: true });
     await FileSystem.deleteAsync(pathOf(id), { idempotent: true });
     await writeIndex((await readIndex()).filter(m => m.id !== id));

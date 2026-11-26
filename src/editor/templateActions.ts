@@ -13,7 +13,7 @@ import { coverCrop, instantiateDocument, instantiateLayers } from '../utils/temp
 import { fitLayersTo, resizeDocument } from '../utils/canvas';
 import { fitWithin } from '../utils/limits';
 import type { EditorDocument, EditorLayer } from '../types/editor';
-import { acceptEdit } from './actions';
+import { acceptEdit, openTool } from './actions';
 
 const ui = () => useUiStore.getState();
 const docStore = () => useEditorStore.getState();
@@ -30,6 +30,7 @@ function undoToast(message: string, before: EditorDocument | null) {
 async function adoptImages(layers: EditorLayer[]): Promise<EditorLayer[]> {
   const out: EditorLayer[] = [];
   for (const l of layers) {
+    if (l.type === 'pattern') { out.push({ ...l, sources: await Promise.all(l.sources.map(async src => ({ ...src, uri: await durableImage(src.uri) }))) }); continue; }
     if (l.type !== 'image') { out.push(l); continue; }
     out.push({ ...l, uri: await durableImage(l.uri), magicMaskUri: l.magicMaskUri ? await durableImage(l.magicMaskUri) : undefined });
   }
@@ -62,6 +63,8 @@ export async function applyTemplate(meta: TemplateMeta) {
     }
     ui().set({ templatesOpen: false });
     undoToast(`Plantilla «${t.name}» aplicada`, before);
+    // Una escena (capas con papel) abre su panel: ahí se sustituye cada componente por stickers.
+    if (docStore().document?.layers.some(l => l.role)) openTool('scene');
   } catch (e) { Alert.alert('Plantillas', String(e)); }
   finally { ui().set({ imageLoading: false }); }
 }

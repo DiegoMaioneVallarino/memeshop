@@ -31,6 +31,10 @@ function scaleLayer(l: EditorLayer, k: number, ox: number, oy: number, W: number
       strokeWidth: l.strokeWidth !== undefined ? l.strokeWidth * k : undefined, shadowBlur: l.shadowBlur !== undefined ? l.shadowBlur * k : undefined,
       shadowOffsetX: l.shadowOffsetX !== undefined ? l.shadowOffsetX * k : undefined, shadowOffsetY: l.shadowOffsetY !== undefined ? l.shadowOffsetY * k : undefined } as EditorLayer;
   }
+  if (l.type === 'pattern') {
+    // Un fondo de patrón cubre siempre todo el lienzo (sus copias están normalizadas a la capa).
+    return { ...l, x: ox, y: oy, width: w, height: h } as EditorLayer;
+  }
   if (l.type === 'paint') {
     // Los trazos de pintura tampoco escalan solos con el ancho de la capa.
     return { ...base, type: 'paint', strokes: l.strokes.map(s => ({ ...s, size: s.size * k, points: s.points.map(p => ({ x: p.x * k, y: p.y * k })) })) } as EditorLayer;

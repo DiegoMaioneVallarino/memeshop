@@ -1,5 +1,6 @@
 export type LayerBlendMode = 'srcOver' | 'multiply' | 'screen' | 'overlay' | 'darken' | 'lighten' | 'difference';
-export type LayerMeta = { locked?: boolean; blendMode?: LayerBlendMode; groupId?: string; maskStrokes?: MaskStroke[] };
+/** `role`: papel en una escena («mar», «tierra», «personaje»…). Las escenas guardadas como plantilla sustituyen cada papel por stickers. */
+export type LayerMeta = { locked?: boolean; blendMode?: LayerBlendMode; groupId?: string; maskStrokes?: MaskStroke[]; role?: string };
 export type MaskStroke = { id: string; points: StrokePoint[]; radius: number; opacity: number; spread: number; restore: boolean; hardness?: number };
 export type WarpSettings = { mode: 'push' | 'twirl' | 'bulge' | 'wave' | 'mesh'; centerX: number; centerY: number; radius: number; strength: number; frequency: number; strokes?: {x:number;y:number;dx:number;dy:number;strokeId?:number}[]; frozen?: {x:number;y:number;radius:number}[]; brushMode?: 'push' | 'freeze'; }
 export type EffectStage = 'warp' | 'glitch' | 'recolor' | 'adjustments';
@@ -23,7 +24,16 @@ export type PhotoAdjustments = {
 /** Campo de licuar: malla cols×rows de desplazamientos (dx, dy) normalizados a la capa. Ver utils/liquify.ts. */
 export type LiquifyField = { cols: number; rows: number; data: number[] };
 export type TextLayer = { id: string; type: 'text'; name: string; text: string; color: string; fontSize: number; align: 'left' | 'center' | 'right'; lineHeight: number; fontFamily?: string; letterSpacing?: number; highlightOpacity?: number; shadowOffsetX?: number; shadowOffsetY?: number; strokeWidth?: number; strokeColor?: string; shadowBlur?: number; shadowColor?: string; highlightColor?: string | null; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
-export type EditorLayer = (ImageLayer | ShapeLayer | PaintLayer | TextLayer) & LayerMeta;
+import type { PatternItem, PatternParams } from '../utils/pattern';
+export type PatternSource = { uri: string; width: number; height: number; name?: string };
+/**
+ * Fondo de patrón / collage: los mismos stickers repetidos muchas veces. Cada imagen fuente se carga UNA vez y se
+ * dibuja en todas sus copias (200 capas de imagen cargarían 200 veces la misma foto). Los elementos están
+ * normalizados a la capa, que ocupa todo el lienzo.
+ */
+export type PatternLayer = { id: string; type: 'pattern'; name: string; sources: PatternSource[]; items: PatternItem[]; params?: PatternParams;
+  x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
+export type EditorLayer = (ImageLayer | ShapeLayer | PaintLayer | TextLayer | PatternLayer) & LayerMeta;
 export type PhotoAsset = { uri: string; width: number; height: number; name?: string };
 /** `background`: color de fondo del lienzo (por defecto blanco). 'transparent' exporta PNG con transparencia. */
 export type EditorDocument = { width: number; height: number; layers: EditorLayer[]; selectedId: string | null; background?: string };

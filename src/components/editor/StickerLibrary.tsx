@@ -20,9 +20,9 @@ function Checker() {
   </View>;
 }
 
-export function StickerLibrary({ onInsert, onClose, onCreate }: { onInsert: (a: StickerAsset) => void; onClose: () => void; onCreate: () => void }) {
+export function StickerLibrary({ onInsert, onClose, onCreate, title, initialQuery }: { onInsert: (a: StickerAsset) => void; onClose: () => void; onCreate: () => void; title?: string; initialQuery?: string }) {
   const [items, setItems] = useState<StickerAsset[]>([]);
-  const [query, setQuery] = useState('');
+  const [query, setQuery] = useState(initialQuery ?? '');
   const [menuFor, setMenuFor] = useState<StickerAsset | null>(null);
   const [editing, setEditing] = useState<StickerAsset | null>(null);
   const refresh = () => getStickers().then(setItems).catch(e => Alert.alert('Biblioteca', String(e)));
@@ -31,7 +31,7 @@ export function StickerLibrary({ onInsert, onClose, onCreate }: { onInsert: (a: 
 
   return <View style={s.root}>
     <View style={s.head}>
-      <Text style={s.title}>Mis stickers</Text>
+      <Text style={s.title} numberOfLines={1}>{title ?? 'Mis stickers'}</Text>
       <Pressable accessibilityLabel="Cerrar" hitSlop={10} onPress={onClose}><Feather name="x" size={24} color="white" /></Pressable>
     </View>
     <View style={s.search}>
@@ -70,7 +70,7 @@ export function StickerLibrary({ onInsert, onClose, onCreate }: { onInsert: (a: 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#171717', padding: 16 },
   head: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 },
-  title: { color: 'white', fontSize: 21, fontWeight: '700' },
+  title: { color: 'white', fontSize: 21, fontWeight: '700', flex: 1, marginRight: 12 },
   search: { backgroundColor: '#292929', borderRadius: 12, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, gap: 6 },
   input: { flex: 1, color: 'white', paddingVertical: 10 },
   create: { backgroundColor: theme.accent, padding: 14, borderRadius: 12, flexDirection: 'row', gap: 8, marginTop: 14, alignItems: 'center', justifyContent: 'center' },

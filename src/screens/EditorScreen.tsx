@@ -24,6 +24,11 @@ import { wand } from '../tools/wand/wandController';
 import { TextEditOverlay } from '../components/editor/TextEditOverlay';
 import { Glass } from '../components/common/Glass';
 import { StickerSaveModal } from '../components/editor/StickerSaveModal';
+import { addCollageSticker, startCollage } from '../editor/collageActions';
+import { replaceLayerWithSticker } from '../editor/sceneActions';
+import type { StickerAsset } from '../services/stickerLibrary';
+
+const HEADER_H = 64;
 import { acceptCutout, cancelStickerFlow, createStickerFromGallery, saveLayerAsSticker } from '../editor/stickerActions';
 import { cropRect, cropLocalAngle, initialCrop } from '../utils/crop';
 import { hasEffects, withoutEffects } from '../utils/compare';
@@ -80,7 +85,7 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
   const picking = useUiStore(s => s.pickingColor), gpuWand = useUiStore(s => s.gpuWand), toast = useUiStore(s => s.toast);
   const templatesOpen = useUiStore(s => s.templatesOpen), comparing = useUiStore(s => s.comparing);
   const liquify = useUiStore(s => s.liquify), textEditing = useUiStore(s => s.textEditing), cutoutBrush = useUiStore(s => s.cutoutBrush);
-  const stickerSave = useUiStore(s => s.stickerSave);
+  const stickerSave = useUiStore(s => s.stickerSave), stickerPick = useUiStore(s => s.stickerPick);
   const stickerLayerName = document?.layers.find(l => l.id === stickerSave?.layerId)?.name ?? 'Sticker';
   const set = useUiStore(s => s.set), setBrush = useUiStore(s => s.setBrush), hideToast = useUiStore(s => s.hideToast);
 
@@ -93,8 +98,12 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
   // franja reservada; el documento siempre se encaja por encima de ella, así abrir/cerrar paneles o aplicar
   // efectos nunca mueve la cámara.
   const [workHeight, setWorkHeight] = useState(0);
+  const [toolbarH, setToolbarH] = useState(76);
+  const headerTotal = insets.top + 6 + HEADER_H;
+  const toolbarTotal = document ? toolbarH + insets.bottom : 0;
   const panelReserve = Math.round(Math.min(360, Math.max(220, workHeight * .44)));
-  const frame = useMemo(() => ({ top: 10, bottom: panelReserve + 8 }), [panelReserve]);
+  // El lienzo ocupa toda la pantalla: el documento se encaja ENTRE la cabecera y la franja de paneles sobre la barra.
+  const frame = useMemo(() => ({ top: headerTotal + 10, bottom: toolbarTotal + panelReserve + 8 }), [headerTotal, toolbarTotal, panelReserve]);
 
   // Cambiar de capa invalida el toque de la varita y el rectángulo de recorte.
   useEffect(() => { wand.forget(); set({ crop: initialCrop }); }, [selectedId, set]);
@@ -133,35 +142,38 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
   const onSelectTool = (t: Tool) => {
     if (t === 'photo') { if (selectedId) void fillPlaceholder(selectedId); return; }
     if (t === 'cutout') { if (tool !== 'cutout' && !bgWorking) void removeBackground(); return; }
+    if (t === 'collage') { set({ layersOpen: false }); if (tool === 'collage') { acceptEdit(); return; } startCollage(); return; }
     chooseTool(t);
   };
 
-  return <View style={[s.root, { paddingTop: insets.top + 6, paddingLeft: insets.left, paddingRight: insets.right }]}>
-    <EditorHeader editing={editing} applyEdit={tool === 'crop' ? () => void applyCrop() : tool === 'cutout' ? acceptCutout : acceptEdit}
-      cancelEdit={() => { discardEdit(); cancelStickerFlow(); }} back={onBack}
-      undo={editing ? sessionUndo : undo} redo={editing ? sessionRedo : redo} canUndo={canUndo} canRedo={canRedo} exportImage={() => void exportImage()} busy={busy}
-      eraseImage={document && selectedId ? () => {
-        set({ layersOpen: false });
-        // En la revisión de quitar fondo, la goma corrige la selección sin salir de ella.
-        if (tool === 'cutout') { set({ cutoutBrush: 'erase' }); return; }
-        acceptEdit(); useUiStore.getState().setMask({ mode: 'erase' }); openTool('mask');
-      } : undefined}
-      eraseActive={tool === 'mask' || (tool === 'cutout' && cutoutBrush === 'erase')} eraseInEdit={tool === 'cutout'}
-      compare={compare} />
+  const pickerOpen = stickersOpen || !!stickerPick;
+  const onStickerChosen = (a: StickerAsset) => {
+    const pick = stickerPick;
+    set({ stickerPick: null, stickersOpen: false });
+    if (pick?.purpose === 'collage') void addCollageSticker(a);
+    else if (pick?.purpose === 'replace') void replaceLayerWithSticker(pick.layerId, a);
+    else void insertSticker(a);
+  };
 
-    <View style={s.workspace} onLayout={e => { const h = e.nativeEvent.layout.height; if (!textEditing && Math.abs(h - workHeight) > 1) setWorkHeight(h); }}>
-      {document && shown
-        ? <PhotoCanvas ref={canvasRef} document={shown} mode={mode} brush={brush} frame={frame} liquify={liquify}
-            gpuWand={tool === 'wand' ? gpuWand : null} cropPreview={cropPreview} onLayerRemoved={onLayerRemoved}
-            onWandPick={(x, y) => wand.pick(x, y)} onEditText={editTextLayer}
-            onPickColor={color => { setBrush({ color, eraser: false }); set({ pickingColor: false }); }} />
-        : <View style={s.empty}>
-            <Feather name="image" size={48} color="#aaa" />
-            <Text style={s.emptyTitle}>Comienza a crear</Text>
-            <MiniButton label="Elegir imagen" active onPress={() => void importImage(true)} />
-            <MiniButton label="Usar una plantilla" onPress={() => set({ templatesOpen: true })} />
-            <MiniButton label="Lienzo en blanco 1080×1080" onPress={() => useEditorStore.getState().replaceDocument(blankDocument(1080, 1080))} />
-          </View>}
+  return <View style={s.root}>
+    {/* El lienzo ocupa TODA la pantalla y pasa por debajo de la cabecera y la barra translúcidas. */}
+    <View style={StyleSheet.absoluteFill}>
+      {document && shown && <PhotoCanvas ref={canvasRef} document={shown} mode={mode} brush={brush} frame={frame} liquify={liquify}
+        gpuWand={tool === 'wand' ? gpuWand : null} cropPreview={cropPreview} onLayerRemoved={onLayerRemoved}
+        onWandPick={(x, y) => wand.pick(x, y)} onEditText={editTextLayer}
+        onPickColor={color => { setBrush({ color, eraser: false }); set({ pickingColor: false }); }} />}
+    </View>
+
+    {/* Zona entre la cabecera y la barra: paneles, cajón de capas, avisos. Deja pasar los toques al lienzo. */}
+    <View pointerEvents="box-none" style={[s.middle, { top: headerTotal, bottom: toolbarTotal, left: insets.left, right: insets.right }]}
+      onLayout={e => { const h = e.nativeEvent.layout.height; if (!textEditing && Math.abs(h - workHeight) > 1) setWorkHeight(h); }}>
+      {!document && <View style={s.empty}>
+        <Feather name="image" size={48} color="#aaa" />
+        <Text style={s.emptyTitle}>Comienza a crear</Text>
+        <MiniButton label="Elegir imagen" active onPress={() => void importImage(true)} />
+        <MiniButton label="Usar una plantilla" onPress={() => set({ templatesOpen: true })} />
+        <MiniButton label="Lienzo en blanco 1080×1080" onPress={() => useEditorStore.getState().replaceDocument(blankDocument(1080, 1080))} />
+      </View>}
       {comparing && <View pointerEvents="none" style={s.compareBadge}><Text style={s.compareText}>{editing ? 'ANTES' : 'ORIGINAL'}</Text></View>}
       {picking && <Pressable style={s.pickerBanner} onPress={() => set({ pickingColor: false })}>
         <Text style={{ color: 'white', textAlign: 'center' }}>Mantén pulsado y arrastra el cuentagotas · Toca aquí para cancelar</Text>
@@ -181,11 +193,32 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
       {toast && <ToastBar key={toast.id} message={toast.message} actionLabel={toast.actionLabel} onAction={toast.action} onHide={hideToast} />}
     </View>
 
-    {document && <View style={{ paddingBottom: insets.bottom }}>
-      <EditorToolbar active={layersOpen ? 'layers' : templatesOpen ? 'templates' : tool} onSelect={onSelectTool} contextual={contextual} />
+    <Glass style={[s.headerBar, { paddingTop: insets.top + 6, paddingLeft: insets.left, paddingRight: insets.right }]}>
+    <EditorHeader editing={editing} applyEdit={tool === 'crop' ? () => void applyCrop() : tool === 'cutout' ? acceptCutout : acceptEdit}
+      cancelEdit={() => { discardEdit(); cancelStickerFlow(); }} back={onBack}
+      undo={editing ? sessionUndo : undo} redo={editing ? sessionRedo : redo} canUndo={canUndo} canRedo={canRedo} exportImage={() => void exportImage()} busy={busy}
+      eraseImage={document && selectedId ? () => {
+        set({ layersOpen: false });
+        // En la revisión de quitar fondo, la goma corrige la selección sin salir de ella.
+        if (tool === 'cutout') { set({ cutoutBrush: 'erase' }); return; }
+        acceptEdit(); useUiStore.getState().setMask({ mode: 'erase' }); openTool('mask');
+      } : undefined}
+      eraseActive={tool === 'mask' || (tool === 'cutout' && cutoutBrush === 'erase')} eraseInEdit={tool === 'cutout'}
+      compare={compare} />
+    </Glass>
+    {document && <View style={s.footerBar} onLayout={e => { const h = e.nativeEvent.layout.height - insets.bottom; if (Math.abs(h - toolbarH) > 1) setToolbarH(h); }}>
+      <Glass style={{ paddingBottom: insets.bottom, paddingLeft: insets.left, paddingRight: insets.right }}>
+        <EditorToolbar active={layersOpen ? 'layers' : templatesOpen ? 'templates' : tool} onSelect={onSelectTool} contextual={contextual} />
+      </Glass>
     </View>}
+
     {/* Pantallas completas: empiezan debajo de la barra de estado / isla dinámica. */}
-    {document && stickersOpen && <View style={[StyleSheet.absoluteFill, { top: insets.top }]}><StickerLibrary onInsert={a => void insertSticker(a)} onClose={() => set({ stickersOpen: false })} onCreate={() => { void createStickerFromGallery(); }} /></View>}
+    {document && pickerOpen && <View style={[StyleSheet.absoluteFill, { top: insets.top }]}>
+      <StickerLibrary key={stickerPick ? `pick-${stickerPick.purpose}` : 'library'} onInsert={onStickerChosen}
+        onClose={() => set({ stickersOpen: false, stickerPick: null })} onCreate={() => { set({ stickerPick: null }); void createStickerFromGallery(); }}
+        title={stickerPick?.purpose === 'collage' ? 'Elige un sticker para el collage' : stickerPick?.purpose === 'replace' ? `Sustituir «${stickerPick.query || 'componente'}»` : undefined}
+        initialQuery={stickerPick?.purpose === 'replace' ? stickerPick.query : undefined} />
+    </View>}
     {templatesOpen && <View style={[StyleSheet.absoluteFill, { top: insets.top }]}><TemplateLibrary onClose={() => set({ templatesOpen: false })} /></View>}
     <StickerSaveModal visible={!!stickerSave} title="¿Guardar como sticker?" initialName={stickerLayerName.replace(/\.(jpe?g|png|webp|heic)$/i, '')}
       busy={busy} onCancel={() => set({ stickerSave: null })}
@@ -197,7 +230,9 @@ export function EditorScreen({ onBack }: { onBack: () => void }) {
 
 const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: theme.bg },
-  workspace: { flex: 1, backgroundColor: '#1a1a1a' },
+  middle: { position: 'absolute' },
+  headerBar: { position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20 },
+  footerBar: { position: 'absolute', bottom: 0, left: 0, right: 0, zIndex: 20 },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 20 },
   emptyTitle: { color: '#fff', fontSize: 22, fontWeight: '600' },
   sheetOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, zIndex: 10, overflow: 'hidden', borderTopLeftRadius: 18, borderTopRightRadius: 18 },
