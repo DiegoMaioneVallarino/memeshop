@@ -71,3 +71,32 @@ test('reemplazar documento, rellenar un hueco y añadir capas son un paso de his
   st().undo();
   assert.equal(st().document!.width, 1000, 'y luego el lienzo anterior');
 });
+
+test('el original es el lienzo completo del inicio y no cambia con las ediciones', () => {
+  const origin = st().origin;
+  assert.ok(origin && origin === st().document, 'setPhoto en un proyecto vacío fija el original');
+  st().addText();
+  st().update(st().document!.layers[0].id, { opacity: .3 });
+  assert.equal(st().origin, origin);
+  st().setPhoto({ uri: 'b.jpg', width: 10, height: 10 });
+  assert.equal(st().origin, origin, 'reemplazar la foto no cambia el original');
+  st().resetDocument();
+  assert.equal(st().origin, null);
+});
+
+test('dentro de una herramienta se deshace trazo a trazo y Aplicar deja un solo paso', () => {
+  const id = st().document!.layers[0].id, before = st().past.length;
+  st().beginEdit();
+  st().appendMaskStroke(id, { id: 'a', points: [{ x: 1, y: 1 }], radius: 5, opacity: 1, spread: 0, restore: false });
+  st().appendMaskStroke(id, { id: 'b', points: [{ x: 2, y: 2 }], radius: 5, opacity: 1, spread: 0, restore: false });
+  assert.equal(st().sessionPast.length, 2);
+  st().sessionUndo();
+  assert.equal(st().document!.layers[0].maskStrokes!.length, 1);
+  st().sessionRedo();
+  assert.equal(st().document!.layers[0].maskStrokes!.length, 2);
+  st().sessionUndo();
+  st().finishEdit();
+  assert.equal(st().past.length, before + 1, 'un solo paso en el historial principal');
+  assert.equal(st().sessionPast.length, 0);
+  assert.equal(st().document!.layers[0].maskStrokes!.length, 1);
+});

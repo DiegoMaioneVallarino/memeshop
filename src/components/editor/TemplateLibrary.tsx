@@ -30,15 +30,15 @@ function useBuiltinThumb(id: string) {
 
 const KIND_LABEL: Record<TemplateKind, string> = { layout: 'Diseño', overlay: 'Sobre tu foto' };
 
-function Card({ meta, onPress, onLongPress }: { meta: TemplateMeta; onPress: () => void; onLongPress?: () => void }) {
+export function TemplateCard({ meta, onPress, onLongPress, width, light }: { meta: TemplateMeta; onPress: () => void; onLongPress?: () => void; width?: number; light?: boolean }) {
   const builtinUri = useBuiltinThumb(meta.builtIn ? meta.id : '');
   const uri = meta.builtIn ? builtinUri : meta.thumbnail ?? null;
-  return <Pressable onPress={onPress} onLongPress={onLongPress} delayLongPress={350} style={s.card} accessibilityLabel={`Plantilla ${meta.name}`}>
-    <View style={s.thumb}>
+  return <Pressable onPress={onPress} onLongPress={onLongPress} delayLongPress={350} style={width ? { width } : s.card} accessibilityLabel={`Plantilla ${meta.name}`}>
+    <View style={[s.thumb, light && { backgroundColor: '#f0f0f0' }]}>
       {uri ? <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="contain" /> : <ActivityIndicator color="#777" />}
       <View style={[s.badge, meta.kind === 'overlay' && { backgroundColor: '#1f3b8a' }]}><Text style={s.badgeText}>{KIND_LABEL[meta.kind]}</Text></View>
     </View>
-    <Text style={s.name} numberOfLines={1}>{meta.name}</Text>
+    <Text style={[s.name, light && { color: '#111' }]} numberOfLines={1}>{meta.name}</Text>
     {onLongPress ? <Pressable hitSlop={10} onPress={onLongPress} style={s.more}><Feather name="more-horizontal" size={18} color="#ccc" /></Pressable> : null}
   </Pressable>;
 }
@@ -92,10 +92,10 @@ export function TemplateLibrary({ onClose }: { onClose: () => void }) {
       <Text style={s.section}>MIS PLANTILLAS</Text>
       {mine === null ? <ActivityIndicator color={theme.accent} /> : mine.length === 0
         ? <Text style={s.empty}>Aún no tienes plantillas. Diseña un meme y guárdalo aquí para reutilizarlo.</Text>
-        : <View style={s.grid}>{mine.map(m => <Card key={m.id} meta={m} onPress={() => void applyTemplate(m)} onLongPress={() => setMenuFor(m)} />)}</View>}
+        : <View style={s.grid}>{mine.map(m => <TemplateCard key={m.id} meta={m} onPress={() => void applyTemplate(m)} onLongPress={() => setMenuFor(m)} />)}</View>}
       <Text style={s.section}>INCLUIDAS</Text>
       <Text style={s.empty}>«Diseño» reemplaza el lienzo; toca un hueco gris y «Poner foto» para rellenarlo. «Sobre tu foto» se añade encima de tu imagen.</Text>
-      <View style={s.grid}>{builtins.map(m => <Card key={m.id} meta={m} onPress={() => void applyTemplate(m)} />)}</View>
+      <View style={s.grid}>{builtins.map(m => <TemplateCard key={m.id} meta={m} onPress={() => void applyTemplate(m)} />)}</View>
     </ScrollView>
 
     <SaveTemplateModal visible={saving} onClose={saved => { setSaving(false); if (saved) void refresh(); }} />

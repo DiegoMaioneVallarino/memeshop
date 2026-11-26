@@ -6,6 +6,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, Image, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ProjectsHome } from './ProjectsHome';
+import { HomeScreen, type StartIntent } from './HomeScreen';
 import { EditorScreen } from './EditorScreen';
 import {
   deleteProject, detachLibraryAssets, duplicateProject, listProjects, loadProject, migrateLegacyMasks, migrateLegacyProjects,
@@ -17,12 +18,16 @@ import { renderThumbnailBase64 } from '../components/editor/PhotoCanvas';
 import { useEditorStore } from '../store/useEditorStore';
 import { useUiStore } from '../store/useUiStore';
 import { theme } from '../components/common/controls';
+import { chooseTool, importImage, openTool, removeBackground } from '../editor/actions';
+import { applyTemplate, blankDocument } from '../editor/templateActions';
+import { filterPatch } from '../tools/effects/presets';
 
 const AUTOSAVE_MS = 1200;
 
 export function Root() {
   const [booting, setBooting] = useState(true);
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
+  const [screen, setScreen] = useState<'home' | 'projects'>('home');
   const [open, setOpen] = useState<{ id: string; name: string; thumbnail?: string } | null>(null);
   /** Documento del que se hizo la última miniatura: si no cambió, no se vuelve a renderizar. */
   const thumbFor = useRef<unknown>(null);
@@ -78,7 +83,7 @@ export function Root() {
     try { doc = (await detachLibraryAssets(doc)).document; } catch (e) { console.warn(e); }
     clearMasks();
     useUiStore.getState().resetForDocument();
-    useEditorStore.setState({ document: doc, past: [], future: [], editBaseline: null });
+    useEditorStore.setState({ document: doc, past: [], future: [], editBaseline: null, origin: doc });
     thumbFor.current = doc; // recién abierto: la miniatura guardada ya corresponde a este documento
     setOpen({ id: p.id, name: p.name, thumbnail: p.thumbnail });
   };
@@ -88,6 +93,32 @@ export function Root() {
     useEditorStore.getState().resetDocument();
     thumbFor.current = null;
     setOpen({ id: String(Date.now()), name: 'Proyecto sin título' });
+  };
+  /** Atajos del inicio: proyecto nuevo + lo que el usuario quería hacer. */
+  const start = async (intent: StartIntent) => {
+    newProject();
+    if (intent.kind === 'blank') { useEditorStore.getState().replaceDocument(blankDocument(intent.width, intent.height)); return; }
+    if (intent.kind === 'template') { await applyTemplate(intent.meta); return; }
+    if (intent.kind === 'look') {
+      await importImage(true);
+      const st = useEditorStore.getState(), layer = st.document?.layers.find(l => l.id === st.document?.selectedId);
+      if (layer?.type !== 'image') return;
+      // Se abre Efectos con el estilo ya aplicado: el usuario lo ve, lo compara con el ojo y puede cambiarlo o cancelarlo.
+      useUiStore.getState().set({ filterCategory: 'ESTILOS' });
+      openTool('effects');
+      useEditorStore.getState().update(layer.id, filterPatch(intent.name, layer));
+      useUiStore.getState().set({ filterPreset: intent.name });
+      return;
+    }
+    await importImage(true);
+    if (!useEditorStore.getState().document) return; // canceló el selector: queda el editor vacío con sus opciones
+    switch (intent.then) {
+      case 'removeBg': await removeBackground(); break;
+      case 'text': chooseTool('text'); break;
+      case 'liquify': openTool('liquify'); break;
+      case 'adjust': openTool('adjust'); break;
+      case 'effects': openTool('effects'); break;
+    }
   };
   const goHome = async () => {
     const st = useEditorStore.getState();
@@ -110,8 +141,11 @@ export function Root() {
 
   if (open) return <EditorScreen onBack={onBack} />;
 
+  if (screen === 'home') return <HomeScreen projects={projects} onStart={intent => { void start(intent); }}
+    onOpen={p => void openProject(p)} onSeeAll={() => setScreen('projects')} />;
+
   return <SafeAreaView style={{ flex: 1, backgroundColor: 'white' }} edges={['top', 'left', 'right']}>
-    <ProjectsHome projects={projects} onOpen={p => void openProject(p)} onCreate={newProject}
+    <ProjectsHome projects={projects} onOpen={p => void openProject(p)} onCreate={() => void start({ kind: 'photo' })} onBack={() => setScreen('home')}
       onRename={async (id, name) => { try { await renameProject(id, name); await refresh(); } catch (e) { Alert.alert('Renombrar', String(e)); } }}
       onDuplicate={async id => { try { await duplicateProject(id); await refresh(); } catch (e) { Alert.alert('Duplicar', String(e)); } }}
       onDelete={async id => { await deleteProject(id); await refresh(); void pruneAssets(); }} />

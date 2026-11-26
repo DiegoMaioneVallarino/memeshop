@@ -5,7 +5,8 @@ import { useEditorStore } from '../../store/useEditorStore';
 import type { WarpSettings } from '../../types/editor';
 import { useSelectedOf } from '../useSelected';
 
-const MODES: [WarpSettings['mode'], string][] = [['push', 'Liquify'], ['twirl', 'Twirl'], ['bulge', 'Inflar'], ['wave', 'Ondas'], ['mesh', 'Malla']];
+// «Liquify» (push) pasó a su propia herramienta: Herramientas → Licuar. Aquí quedan las distorsiones globales.
+const MODES: [WarpSettings['mode'], string][] = [['twirl', 'Remolino'], ['bulge', 'Inflar'], ['wave', 'Ondas'], ['mesh', 'Malla']];
 const DEFAULT_WARP: WarpSettings = { mode: 'twirl', centerX: .5, centerY: .5, radius: .5, strength: .5, frequency: 2 };
 
 export function WarpPanel() {

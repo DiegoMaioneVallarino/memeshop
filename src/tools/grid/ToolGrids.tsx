@@ -3,7 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useUiStore, type Tool } from '../../store/useUiStore';
-import { acceptEdit, chooseTool, importImage, openTool } from '../../editor/actions';
+import { acceptEdit, chooseTool, importImage, openTool, removeBackground } from '../../editor/actions';
 import { initialCrop } from '../../utils/crop';
 
 type Icon = React.ComponentProps<typeof Feather>['name'];
@@ -16,7 +16,9 @@ const go = (tool: Tool) => { acceptEdit(); openTool(tool); };
 export function ToolsGrid() {
   return <View style={s.grid}>
     <GridButton icon="crop" title="Recortar" onPress={() => { useUiStore.getState().set({ crop: initialCrop }); go('crop'); }} />
-    <GridButton icon="aperture" title="Deformar" onPress={() => go('warp')} />
+    <GridButton icon="wind" title="Licuar" onPress={() => go('liquify')} />
+    <GridButton icon="aperture" title="Distorsión" onPress={() => go('warp')} />
+    <GridButton icon="scissors" title="Quitar fondo" onPress={() => { void removeBackground(); }} />
     <GridButton icon="target" title="Varita mágica" onPress={() => go('wand')} />
     <GridButton icon="sliders" title="Ajustar" onPress={() => go('adjust')} />
     <GridButton icon="move" title="Transformar" onPress={() => go('transform')} />

@@ -3,14 +3,25 @@ export type LayerMeta = { locked?: boolean; blendMode?: LayerBlendMode; groupId?
 export type MaskStroke = { id: string; points: StrokePoint[]; radius: number; opacity: number; spread: number; restore: boolean; hardness?: number };
 export type WarpSettings = { mode: 'push' | 'twirl' | 'bulge' | 'wave' | 'mesh'; centerX: number; centerY: number; radius: number; strength: number; frequency: number; strokes?: {x:number;y:number;dx:number;dy:number;strokeId?:number}[]; frozen?: {x:number;y:number;radius:number}[]; brushMode?: 'push' | 'freeze'; }
 export type EffectStage = 'warp' | 'glitch' | 'recolor' | 'adjustments';
-export type ImageLayer = { id: string; type: 'image'; name: string; uri: string; sourceWidth: number; sourceHeight: number; x: number; y: number; width: number; height: number; rotation: number; flipX?: boolean; opacity: number; visible: boolean; perspectiveX?: number; perspectiveY?: number; maskStrokes?: MaskStroke[]; magicMaskUri?: string; adjustments?: PhotoAdjustments; glitch?: number; colorReplace?: { source: string; target: string; tolerance: number; softness: number; strength: number }; warp?: WarpSettings; glitchSettings?: { mode: number; intensity: number; density: number; seed: number }; effectOrder?: EffectStage[]; effectDisabled?: EffectStage[] };
+export type ImageLayer = { id: string; type: 'image'; name: string; uri: string; sourceWidth: number; sourceHeight: number; x: number; y: number; width: number; height: number; rotation: number; flipX?: boolean; opacity: number; visible: boolean; perspectiveX?: number; perspectiveY?: number; maskStrokes?: MaskStroke[]; magicMaskUri?: string; adjustments?: PhotoAdjustments; liquify?: LiquifyField; glitch?: number; colorReplace?: { source: string; target: string; tolerance: number; softness: number; strength: number }; warp?: WarpSettings; glitchSettings?: { mode: number; intensity: number; density: number; seed: number }; effectOrder?: EffectStage[]; effectDisabled?: EffectStage[] };
 export type ShapeKind = 'rect' | 'rounded' | 'ellipse';
 /** `placeholder`: hueco de foto de una plantilla. Se dibuja como marco con icono y se sustituye por una imagen con «Poner foto». */
 export type ShapeLayer = { id: string; type: 'shape'; name: string; color: string; shape?: ShapeKind; placeholder?: boolean; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
 export type StrokePoint = { x: number; y: number };
 export type BrushStroke = { id: string; points: StrokePoint[]; color: string; size: number; eraser: boolean; opacity?: number; hardness?: number; spread?: number };
 export type PaintLayer = { id: string; type: 'paint'; name: string; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean; strokes: BrushStroke[] };
-export type PhotoAdjustments = { brightness: number; contrast: number; saturation: number };
+/**
+ * Ajustes de foto (todos en -1..1, 0 = sin cambio). Los tres primeros son los originales; el resto es opcional
+ * para que los proyectos y presets antiguos sigan siendo válidos.
+ */
+export type PhotoAdjustments = {
+  brightness: number; contrast: number; saturation: number;
+  exposure?: number; highlights?: number; shadows?: number;
+  vibrance?: number; temperature?: number; tint?: number;
+  clarity?: number; sharpness?: number; vignette?: number; grain?: number; fade?: number;
+};
+/** Campo de licuar: malla cols×rows de desplazamientos (dx, dy) normalizados a la capa. Ver utils/liquify.ts. */
+export type LiquifyField = { cols: number; rows: number; data: number[] };
 export type TextLayer = { id: string; type: 'text'; name: string; text: string; color: string; fontSize: number; align: 'left' | 'center' | 'right'; lineHeight: number; fontFamily?: string; letterSpacing?: number; highlightOpacity?: number; shadowOffsetX?: number; shadowOffsetY?: number; strokeWidth?: number; strokeColor?: string; shadowBlur?: number; shadowColor?: string; highlightColor?: string | null; x: number; y: number; width: number; height: number; rotation: number; opacity: number; visible: boolean };
 export type EditorLayer = (ImageLayer | ShapeLayer | PaintLayer | TextLayer) & LayerMeta;
 export type PhotoAsset = { uri: string; width: number; height: number; name?: string };

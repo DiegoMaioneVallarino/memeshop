@@ -15,6 +15,13 @@ type State = {
   past: EditorDocument[];
   future: EditorDocument[];
   editBaseline: EditorDocument | null;
+  /** Historial dentro de la sesión abierta (se vacía al Aplicar o Cancelar). */
+  sessionPast: EditorDocument[];
+  sessionFuture: EditorDocument[];
+  sessionUndo: () => void;
+  sessionRedo: () => void;
+  /** El lienzo completo tal como estaba al abrir o crear el proyecto: el «original» del botón de comparar. */
+  origin: EditorDocument | null;
   beginEdit: () => void;
   finishEdit: () => void;
   cancelEdit: () => void;
@@ -52,8 +59,15 @@ type State = {
  * The document is treated as immutable, so snapshots are plain references (no deep clone).
  */
 function commit(s: State, document: EditorDocument, key?: string): Partial<State> {
-  if (!s.document || s.editBaseline) return { document };
+  if (!s.document) return { document };
   const now = Date.now();
+  // Dentro de una sesión (herramienta abierta) cada cambio va a un historial PROPIO de la sesión: deshacer funciona
+  // trazo a trazo sin salir de la herramienta, y Aplicar lo convierte todo en un solo paso del historial principal.
+  if (s.editBaseline) {
+    if (key && key === lastKey && now - lastAt < COALESCE_MS) { lastAt = now; return { document, sessionFuture: [] }; }
+    lastKey = key ?? null; lastAt = now;
+    return { document, sessionPast: [...s.sessionPast.slice(-(HISTORY_LIMIT - 1)), s.document], sessionFuture: [] };
+  }
   if (key && key === lastKey && now - lastAt < COALESCE_MS) {
     lastAt = now;
     return { document, future: [] };
@@ -76,37 +90,48 @@ const freshDocument = (asset: PhotoAsset): EditorDocument => {
 };
 export const useEditorStore = create<State>((set) => ({
   document: null,
-  past: [], future: [], editBaseline: null,
-  beginEdit: () => set(s => s.document && !s.editBaseline ? { editBaseline: s.document } : s),
+  past: [], future: [], editBaseline: null, origin: null, sessionPast: [], sessionFuture: [],
+  beginEdit: () => set(s => { if (!s.document || s.editBaseline) return s; resetCoalesce(); return { editBaseline: s.document, sessionPast: [], sessionFuture: [] }; }),
+  sessionUndo: () => set(s => {
+    if (!s.editBaseline || !s.sessionPast.length || !s.document) return s;
+    resetCoalesce();
+    return { document: s.sessionPast[s.sessionPast.length - 1], sessionPast: s.sessionPast.slice(0, -1), sessionFuture: [s.document, ...s.sessionFuture] };
+  }),
+  sessionRedo: () => set(s => {
+    if (!s.editBaseline || !s.sessionFuture.length || !s.document) return s;
+    resetCoalesce();
+    return { document: s.sessionFuture[0], sessionPast: [...s.sessionPast, s.document], sessionFuture: s.sessionFuture.slice(1) };
+  }),
   finishEdit: () => set(s => {
     if (!s.editBaseline) return s;
     resetCoalesce();
     const changed = s.editBaseline !== s.document;
-    return { editBaseline: null, past: changed ? [...s.past.slice(-(HISTORY_LIMIT - 1)), s.editBaseline] : s.past, future: changed ? [] : s.future };
+    return { editBaseline: null, sessionPast: [], sessionFuture: [], past: changed ? [...s.past.slice(-(HISTORY_LIMIT - 1)), s.editBaseline] : s.past, future: changed ? [] : s.future };
   }),
   cancelEdit: () => set(s => {
     if (!s.editBaseline) return s;
     resetCoalesce();
-    return { document: s.editBaseline, editBaseline: null };
+    return { document: s.editBaseline, editBaseline: null, sessionPast: [], sessionFuture: [] };
   }),
   undo: () => set(s => {
     if (!s.document || !s.past.length) return s;
     resetCoalesce();
     const previous = s.past[s.past.length - 1];
-    return { document: previous, past: s.past.slice(0, -1), future: [s.document, ...s.future], editBaseline: null };
+    return { document: previous, past: s.past.slice(0, -1), future: [s.document, ...s.future], editBaseline: null, sessionPast: [], sessionFuture: [] };
   }),
   redo: () => set(s => {
     if (!s.document || !s.future.length) return s;
     resetCoalesce();
-    return { document: s.future[0], past: [...s.past, s.document], future: s.future.slice(1), editBaseline: null };
+    return { document: s.future[0], past: [...s.past, s.document], future: s.future.slice(1), editBaseline: null, sessionPast: [], sessionFuture: [] };
   }),
   // Replacing the photo is undoable when a document already exists (it used to wipe everything for good).
   setPhoto: (asset) => set((s) => {
     resetCoalesce();
-    return { document: freshDocument(asset), past: s.document ? [...s.past.slice(-(HISTORY_LIMIT - 1)), s.document] : [], future: [], editBaseline: null };
+    const document = freshDocument(asset);
+    return { document, past: s.document ? [...s.past.slice(-(HISTORY_LIMIT - 1)), s.document] : [], future: [], editBaseline: null, origin: s.document ? s.origin : document };
   }),
   addImage: (asset) => set((s) => {
-    if (!s.document) { resetCoalesce(); return { document: freshDocument(asset), past: [], future: [], editBaseline: null }; }
+    if (!s.document) { resetCoalesce(); const document = freshDocument(asset); return { document, past: [], future: [], editBaseline: null, origin: document }; }
     const layer = imageLayer(asset, s.document.width, s.document.height);
     return commit(s, { ...s.document, layers: [...s.document.layers, layer], selectedId: layer.id });
   }),
@@ -181,9 +206,9 @@ export const useEditorStore = create<State>((set) => ({
   ungroupLayers: groupId => set(s => !s.document ? s : commit(s, { ...s.document, layers: s.document.layers.map(l => l.groupId === groupId ? { ...l, groupId: undefined } : l) })),
   setGroupVisibility: (groupId, visible) => set(s => !s.document ? s : commit(s, { ...s.document, layers: s.document.layers.map(l => l.groupId === groupId ? { ...l, visible } : l) })),
   setGroupLocked: (groupId, locked) => set(s => !s.document ? s : commit(s, { ...s.document, layers: s.document.layers.map(l => l.groupId === groupId ? { ...l, locked } : l) })),
-  resetDocument: () => { resetCoalesce(); set({ document: null, past: [], future: [], editBaseline: null }); },
+  resetDocument: () => { resetCoalesce(); set({ document: null, past: [], future: [], editBaseline: null, origin: null, sessionPast: [], sessionFuture: [] }); },
   replaceDocument: (document) => set(s => {
-    if (!s.document) { resetCoalesce(); return { document, past: [], future: [], editBaseline: null }; }
+    if (!s.document) { resetCoalesce(); return { document, past: [], future: [], editBaseline: null, origin: document }; }
     return commit(s, document);
   }),
   replaceLayer: (id, layer) => set(s => {

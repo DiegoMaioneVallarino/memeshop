@@ -19,7 +19,7 @@ export function WandPanel() {
     <ValueSlider label="Suavizado" value={settings.feather} min={0} max={100} onChange={v => change({ feather: v })} format={v => `${Math.round(v)}%`} />
     {session.working && <Row><ActivityIndicator color={theme.accent} /><Help>Actualizando selección…</Help></Row>}
     {session.point && session.layerId === selected.id &&
-      <Pressable disabled={session.working || busy} onPress={() => void wand.saveAsSticker(() => useUiStore.getState().set({ tool: null, stickersOpen: true }))}
+      <Pressable disabled={session.working || busy} onPress={() => void wand.saveAsSticker()}
         style={[s.primary, (session.working || busy) && { opacity: .5 }]}>
         <Text style={s.primaryText}>{gpu ? 'Aplicar máscara GPU' : 'Guardar como sticker'}</Text>
       </Pressable>}

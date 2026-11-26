@@ -1,12 +1,12 @@
 import React from 'react';
-import { Keyboard, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { Help, MiniButton, Row, Swatches, ValueSlider, theme } from '../../components/common/controls';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useUiStore, type TextTab } from '../../store/useUiStore';
 import { FONT_OPTIONS } from '../../services/fonts';
 import type { TextLayer } from '../../types/editor';
-import { useKeyboardVisible } from '../../editor/useKeyboardVisible';
+import { startTextEditing } from '../../editor/actions';
 import { useSelectedOf } from '../useSelected';
 
 const TABS: TextTab[] = ['Estilos', 'Fuente', 'Trazo', 'Color', 'Resaltador', 'Sombra'];
@@ -28,17 +28,18 @@ export function TextPanel() {
   const docWidth = useEditorStore(s => s.document?.width ?? 1000);
   const update = useEditorStore(s => s.update), addText = useEditorStore(s => s.addText);
   const tab = useUiStore(s => s.textTab), set = useUiStore(s => s.set);
-  const keyboardOpen = useKeyboardVisible();
   if (!layer) return <Help>Selecciona una capa de texto.</Help>;
   const patch = (p: TextStyle) => update(layer.id, p);
   const lines = layer.text.split('\n').length;
   return <View style={s.root}>
     <View style={s.topRow}>
-      <TextInput selectTextOnFocus value={layer.text} placeholder="Escribe tu texto" placeholderTextColor="#888" style={s.entry}
-        onChangeText={v => update(layer.id, { text: v, name: v.split('\n')[0].slice(0, 28) || 'Texto' })} />
-      <Pressable accessibilityLabel="Añadir otro texto" onPress={() => { Keyboard.dismiss(); addText(); }} style={s.add}><Feather name="plus" color="#fff" size={19} /></Pressable>
+      <Pressable accessibilityLabel="Editar texto" onPress={() => startTextEditing(false, false)} style={s.entry}>
+        <Feather name="edit-2" size={15} color="#bbb" />
+        <Text numberOfLines={1} style={s.entryText}>{layer.text || 'Toca para escribir'}</Text>
+      </Pressable>
+      <Pressable accessibilityLabel="Añadir otro texto" onPress={() => { addText(); startTextEditing(true, false); }} style={s.add}><Feather name="plus" color="#fff" size={19} /></Pressable>
     </View>
-    {!keyboardOpen && <>
+    <>
       <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="always" contentContainerStyle={s.tabs}>
         {TABS.map(t => <Pressable key={t} onPress={() => set({ textTab: t })} style={[s.tab, tab === t && s.tabActive]}>
           <Text style={{ color: tab === t ? theme.accentInk : '#ddd', fontWeight: '700', fontSize: 12 }}>{t}</Text>
@@ -88,13 +89,14 @@ export function TextPanel() {
           </View>
         </>}
       </ScrollView>
-    </>}
+    </>
   </View>;
 }
 const s = StyleSheet.create({
   root: { gap: 5, paddingBottom: 2 },
   topRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  entry: { flex: 1, height: 36, borderRadius: 8, backgroundColor: theme.surfaceHi, color: '#fff', fontSize: 14, paddingHorizontal: 10, paddingVertical: 5 },
+  entry: { flex: 1, height: 38, borderRadius: 8, backgroundColor: theme.surfaceHi, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 8 },
+  entryText: { color: '#fff', fontSize: 14, flex: 1 },
   add: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', backgroundColor: theme.surfaceHi, borderRadius: 8 },
   tabs: { gap: 6, paddingVertical: 3 },
   tab: { paddingHorizontal: 10, paddingVertical: 6, backgroundColor: theme.surface, borderRadius: 8 },

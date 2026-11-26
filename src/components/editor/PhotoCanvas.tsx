@@ -1,42 +1,119 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, Text, Keyboard } from 'react-native';
-import { Canvas, Group, Image as SkiaImage, Rect, RoundedRect, Oval, Path, DashPathEffect, Circle, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Paragraph, TextAlign, PaintStyle, StrokeJoin, ImageFormat } from '@shopify/react-native-skia';
-import { useSharedValue, useDerivedValue, runOnJS } from 'react-native-reanimated';
+import { AlphaType, ColorType, Canvas, Group, Image as SkiaImage, Rect, RoundedRect, Oval, Path, DashPathEffect, Circle, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Paragraph, TextAlign, PaintStyle, StrokeJoin, ImageFormat } from '@shopify/react-native-skia';
+import { useSharedValue, useDerivedValue, runOnJS, withTiming, Easing } from 'react-native-reanimated';
 import { ensureFonts, fontFamiliesFor, getFontProvider, getFontVersion, subscribeFonts } from '../../services/fonts';
 import type { SkImage, SkPaint, SkTextStyle } from '@shopify/react-native-skia';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, ShapeLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer, EffectStage } from '../../types/editor';
+import { applyBrush, fieldFrom, fieldToRGBA, serializeField, LIQUIFY_RANGE, type LiquifyMode } from '../../utils/liquify';
+import type { EditorDocument, EditorLayer, ImageLayer, PaintLayer, PhotoAdjustments, ShapeLayer, BrushStroke, StrokePoint, MaskStroke, TextLayer, EffectStage } from '../../types/editor';
 import { useEditorStore } from '../../store/useEditorStore';
 import { getMemMask, isMemMask, loadMaskImage } from '../../services/maskStore';
 
 export type PhotoCanvasHandle = { snapshotBase64: () => Promise<string | null>; sampleColors: () => Promise<string[]>; reset: () => void };
-export type InteractionMode = 'layer' | 'view' | 'brush' | 'mask' | 'eyedropper' | 'wand' | 'warp';
+export type InteractionMode = 'layer' | 'view' | 'brush' | 'mask' | 'eyedropper' | 'wand' | 'warp' | 'liquify';
+export type LiquifyOptions = { mode: LiquifyMode; size: number; strength: number };
+/** Zona reservada arriba y abajo: el documento se encaja SIEMPRE en el mismo rectángulo (la cámara nunca salta). */
+export type CanvasFrame = { top: number; bottom: number };
 export type BrushOptions = { color: string; size: number; eraser: boolean; opacity?: number; hardness?: number; spread?: number; restore?: boolean };
 type Viewport = { zoom: number; x: number; y: number; rotation: number };
 const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
 
-function adjustmentMatrix(brightness: number, contrast: number, saturation: number) {
-  const c = Math.max(0, 1 + contrast), sat = Math.max(0, 1 + saturation);
-  const lr = .2126 * (1 - sat), lg = .7152 * (1 - sat), lb = .0722 * (1 - sat);
-  // Skia's ColorMatrix offset column is normalized 0..1 (NOT 0..255). Contrast pivots around mid-gray (0.5).
-  const b = brightness + .5 * (1 - c);
-  return [c*(lr+sat),c*lg,c*lb,0,b, c*lr,c*(lg+sat),c*lb,0,b, c*lr,c*lg,c*(lb+sat),0,b, 0,0,0,1,0];
-}
 // This stage is composable: it samples the previous shader instead of the original image.
+// Trabaja sin premultiplicar (las imágenes con transparencia no se oscurecen en los bordes).
 const adjustmentEffect = Skia.RuntimeEffect.Make(`
  uniform shader source;
- uniform float brightness;
- uniform float contrast;
- uniform float saturation;
+ uniform float2 dimensions;
+ uniform float brightness; uniform float contrast; uniform float saturation;
+ uniform float exposure; uniform float highlights; uniform float shadows;
+ uniform float vibrance; uniform float temperature; uniform float tint;
+ uniform float clarity; uniform float sharpness; uniform float vignette; uniform float grain; uniform float fade;
+ float3 straight(half4 c) { return c.a > 0.0 ? float3(c.rgb) / float(c.a) : float3(0.0); }
+ float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
  half4 main(float2 p) {
-   half4 c = source.eval(p);
-   float3 rgb = float3(c.rgb);
-   float gray = dot(rgb, float3(0.2126,0.7152,0.0722));
-   rgb = mix(float3(gray),rgb,1.0+saturation);
-   rgb = (rgb - 0.5)*(1.0+contrast)+0.5+brightness;
-   return half4(half3(clamp(rgb,0.0,1.0)),c.a);
+   half4 c0 = source.eval(p);
+   float a = float(c0.a);
+   float3 rgb = straight(c0);
+   float side = max(dimensions.x, dimensions.y);
+   if (sharpness != 0.0) {
+     float r = side * 0.0015;
+     float3 b = (straight(source.eval(p + float2(r, 0.0))) + straight(source.eval(p - float2(r, 0.0)))
+               + straight(source.eval(p + float2(0.0, r))) + straight(source.eval(p - float2(0.0, r)))) * 0.25;
+     rgb += (rgb - b) * sharpness * 1.6;
+   }
+   if (clarity != 0.0) {
+     float r = side * 0.012;
+     float3 b = float3(0.0);
+     for (int i = 0; i < 8; i++) {
+       float t = float(i) * 0.785398;
+       b += straight(source.eval(p + float2(cos(t), sin(t)) * r));
+     }
+     b *= 0.125;
+     float l = luma(rgb);
+     float mid = 1.0 - abs(l - 0.5) * 2.0;           // actúa sobre todo en los tonos medios
+     rgb += (rgb - b) * clarity * 0.9 * (0.35 + 0.65 * mid);
+   }
+   rgb *= exp2(exposure * 1.5);
+   rgb.r += temperature * 0.09; rgb.b -= temperature * 0.09;
+   rgb.g -= tint * 0.07; rgb.r += tint * 0.03; rgb.b += tint * 0.03;
+   float l = luma(rgb);
+   rgb += highlights * 0.35 * smoothstep(0.45, 1.0, l);
+   rgb += shadows * 0.35 * (1.0 - smoothstep(0.0, 0.55, l));
+   rgb = (rgb - 0.5) * (1.0 + contrast) + 0.5 + brightness;
+   float g = luma(rgb);
+   rgb = mix(float3(g), rgb, 1.0 + saturation);
+   float sat = max(rgb.r, max(rgb.g, rgb.b)) - min(rgb.r, min(rgb.g, rgb.b));
+   rgb = mix(float3(luma(rgb)), rgb, 1.0 + vibrance * (1.0 - clamp(sat, 0.0, 1.0)));
+   rgb = rgb * (1.0 - fade * 0.22) + fade * 0.11;
+   float d = distance(p / dimensions, float2(0.5)) * 1.41421;
+   rgb *= 1.0 - vignette * 0.75 * smoothstep(0.25, 1.0, d);
+   float n = fract(sin(dot(floor(p), float2(12.9898, 78.233))) * 43758.5453) - 0.5;
+   rgb += n * grain * 0.18;
+   rgb = clamp(rgb, 0.0, 1.0);
+   return half4(half3(rgb * a), half(a));
  }
 `);
+const ADJUSTMENT_KEYS = ['brightness', 'contrast', 'saturation', 'exposure', 'highlights', 'shadows', 'vibrance', 'temperature', 'tint', 'clarity', 'sharpness', 'vignette', 'grain', 'fade'] as const;
+const adjustmentUniforms = (adj: PhotoAdjustments, w: number, h: number) => {
+  const u: Record<string, number | number[]> = { dimensions: [w, h] };
+  for (const k of ADJUSTMENT_KEYS) u[k] = adj[k] ?? 0;
+  return u;
+};
+const hasAnyAdjustment = (adj?: PhotoAdjustments) => !!adj && ADJUSTMENT_KEYS.some(k => Math.abs(adj[k] ?? 0) > .0001);
+
+// Licuar: lee cada píxel desde p + desplazamiento, con el campo guardado en una textura pequeña (ver utils/liquify.ts).
+const liquifyEffect = Skia.RuntimeEffect.Make(`
+ uniform shader image;
+ uniform shader disp;
+ uniform float2 dimensions;
+ uniform float2 grid;
+ uniform float range;
+ half4 main(float2 p) {
+   float2 uv = p / dimensions;
+   half4 d = disp.eval(uv * (grid - 1.0) + 0.5);
+   float2 off = (float2(float(d.r), float(d.g)) * 255.0 - 128.0) / 127.0 * range;
+   return image.eval((uv + off) * dimensions);
+ }
+`);
+/** Textura del campo: se crea una vez por campo guardado (el documento es inmutable, la referencia sirve de clave). */
+const liquifyTextures = new WeakMap<object, SkImage>();
+export function liquifyTexture(field: { cols: number; rows: number; data: ArrayLike<number> }, cache = true): SkImage | null {
+  const cached = cache ? liquifyTextures.get(field as object) : undefined;
+  if (cached) return cached;
+  const img = Skia.Image.MakeImage({ width: field.cols, height: field.rows, alphaType: AlphaType.Premul, colorType: ColorType.RGBA_8888 },
+    Skia.Data.fromBytes(fieldToRGBA(field)), field.cols * 4);
+  if (img && cache) liquifyTextures.set(field as object, img);
+  return img;
+}
+type LiquifyPreview = { layerId: string; texture: SkImage; cols: number; rows: number };
+/** Envuelve un shader con el desplazamiento de licuar. */
+function withLiquify(child: React.ReactNode, texture: SkImage, cols: number, rows: number, w: number, h: number) {
+  return <Shader source={liquifyEffect!} uniforms={{ dimensions: [w, h], grid: [cols, rows], range: LIQUIFY_RANGE }}>
+    {child}
+    <ImageShader image={texture} x={0} y={0} width={cols} height={rows} fit="fill" tx="clamp" ty="clamp" fm="linear" />
+  </Shader>;
+}
+
 // GPU effects: SkSL samples the source texture directly. No offscreen Paint/ColorMatrix stack.
 const glitchEffect = Skia.RuntimeEffect.Make(`
  uniform shader source;
@@ -438,16 +515,60 @@ function StrokeShape({ stroke }: { stroke: BrushStroke }) {
 function PaintContent({ layer, preview }: { layer: PaintLayer; preview?: BrushStroke | null }) {
   return <Group layer>{layer.strokes.map(stroke => <StrokeShape key={stroke.id} stroke={stroke} />)}{preview && <StrokeShape stroke={preview} />}</Group>;
 }
-function MaskPath({ stroke }: { stroke: MaskStroke }) {
-  return <BrushPath points={stroke.points} width={stroke.radius * 2} color={stroke.restore ? '#ffffff' : '#000000'} opacity={stroke.opacity} softness={softnessOf(stroke.spread, stroke.hardness)} />;
+/**
+ * Trazo de goma. En máscaras de LUMINANCIA (texto, formas, pintura) negro oculta y blanco restaura.
+ * En máscaras ALFA (imágenes) el negro opaco tiene alfa 1, así que «Borrar» no borraba nada: ahí el borrado
+ * resta alfa con dstOut y restaurar lo suma. La máscara se dibuja en su propia capa, así que dstOut solo la afecta a ella.
+ */
+function MaskPath({ stroke, alpha }: { stroke: MaskStroke; alpha?: boolean }) {
+  const path = <BrushPath points={stroke.points} width={stroke.radius * 2} color={stroke.restore ? '#ffffff' : '#000000'} opacity={stroke.opacity} softness={softnessOf(stroke.spread, stroke.hardness)} />;
+  return alpha && !stroke.restore ? <Group layer={<Paint blendMode="dstOut" />}>{path}</Group> : path;
 }
-function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { layer: ImageLayer; preview?: MaskStroke | null; preloaded?: SkImage; preloadedMask?: SkImage; gpuWand?: {layerId:string; x:number; y:number; tolerance:number; feather:number} | null }) {
+// ---- Aparición píxel a píxel ------------------------------------------------------------------------------------
+// Al cargar una foto, los bloques aparecen al azar mientras se hacen cada vez más finos hasta llegar a la imagen nítida.
+const revealEffect = Skia.RuntimeEffect.Make(`
+ uniform shader image;
+ uniform float2 dimensions;
+ uniform float progress;
+ float hash(float2 q) { return fract(sin(dot(q, float2(127.1, 311.7))) * 43758.5453); }
+ half4 main(float2 p) {
+   float t = clamp(progress, 0.0, 1.0);
+   if (t >= 0.999) return image.eval(p);
+   float e = 1.0 - pow(1.0 - t, 3.0);
+   float cell = mix(max(dimensions.x, dimensions.y) / 22.0, 1.0, e);
+   float2 b = floor(p / cell);
+   half4 col = image.eval((b + 0.5) * cell);
+   float r = hash(b + floor(cell));
+   float vis = smoothstep(r - 0.12, r, t * 1.3);
+   return col * half(vis);
+ }
+`);
+const REVEAL_MS = 1100;
+/** Fotos que ya aparecieron en esta sesión: no se vuelve a animar al recortar, deshacer o volver a abrir. */
+const revealedUris = new Set<string>();
+export const markRevealed = (uri: string) => { revealedUris.add(uri); };
+function useReveal(uri: string | null, loaded: boolean, w: number, h: number) {
+  const progress = useSharedValue(1);
+  const [active, setActive] = useState(false);
+  useEffect(() => {
+    if (!uri || !loaded || revealedUris.has(uri)) return;
+    revealedUris.add(uri);
+    progress.value = 0;
+    setActive(true);
+    progress.value = withTiming(1, { duration: REVEAL_MS, easing: Easing.out(Easing.quad) }, done => { if (done) runOnJS(setActive)(false); });
+  }, [uri, loaded]);
+  const uniforms = useDerivedValue(() => ({ dimensions: [w, h], progress: progress.value }), [w, h]);
+  return { active, uniforms };
+}
+
+function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand, liquifyPreview }: { layer: ImageLayer; preview?: MaskStroke | null; liquifyPreview?: LiquifyPreview | null; preloaded?: SkImage; preloadedMask?: SkImage; gpuWand?: {layerId:string; x:number; y:number; tolerance:number; feather:number} | null }) {
   // Las máscaras en memoria (mem-mask:) no pasan por disco ni por useImage: no hay parpadeo al cambiar de máscara.
   const memMask = isMemMask(layer.magicMaskUri) ? getMemMask(layer.magicMaskUri) : null;
   const wandMaskLoaded = useImage(isMemMask(layer.magicMaskUri) ? null : layer.magicMaskUri ?? null);
   const wandMask = preloadedMask ?? memMask ?? wandMaskLoaded;
   const loaded = useImage(preloaded ? null : layer.uri);
   const image = preloaded ?? loaded;
+  const reveal = useReveal(preloaded ? null : layer.uri, !!image, layer.width, layer.height);
   if (!image) return null;
   // Attach the color filter to the image's own paint rather than an offscreen
   // Group layer. An offscreen layer with a nested Paint was rendering black on iOS.
@@ -459,7 +580,10 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
   const glitch = layer.glitchSettings ?? (layer.glitch ? {mode:3,intensity:layer.glitch,density:0.65,seed:1337} : null);
   const recolor = layer.colorReplace;
   const adj = layer.adjustments;
-  const hasAdjustments = !!adj && (Math.abs(adj.brightness ?? 0)>0.0001 || Math.abs(adj.contrast ?? 0)>0.0001 || Math.abs(adj.saturation ?? 0)>0.0001);
+  const hasAdjustments = hasAnyAdjustment(adj);
+  // Licuar: la vista previa del trazo en curso manda sobre el campo guardado.
+  const liq = !liquifyEffect ? null : liquifyPreview && liquifyPreview.layerId === layer.id ? liquifyPreview
+    : layer.liquify && liquifyEffect ? (() => { const t = liquifyTexture(layer.liquify!); return t ? { texture: t, cols: layer.liquify!.cols, rows: layer.liquify!.rows } : null; })() : null;
   const enabled: Record<EffectStage,boolean> = {
     warp:!!warp && !!warpEffect,
     glitch:!!glitch && glitch.mode>0 && !!glitchEffect,
@@ -470,7 +594,9 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
   const ordered=[...(layer.effectOrder??defaultOrder),...defaultOrder].filter((stage,i,all)=>all.indexOf(stage)===i && enabled[stage] && !(layer.effectDisabled??[]).includes(stage));
   // Each stage consumes the previous stage as a shader child. The order is therefore
   // preserved in the canvas and in snapshots/exports that use this same renderer.
-  let pipeline:React.ReactNode=<ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />;
+  // Con licuar, el borde se extiende (clamp) en lugar de volverse transparente al estirar hacia dentro.
+  let pipeline:React.ReactNode=<ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" {...(liq ? { tx: 'clamp' as const, ty: 'clamp' as const } : {})} />;
+  if (liq) pipeline = withLiquify(pipeline, liq.texture, liq.cols, liq.rows, layer.width, layer.height);
   for(const stage of ordered){
     if(stage==='warp' && warp && warpEffect){
       for(const group of stages){
@@ -489,10 +615,14 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
     }else if(stage==='recolor' && recolor && replaceColorEffect){
       pipeline=<Shader source={replaceColorEffect} uniforms={{sourceColor:rgb(recolor.source),targetColor:rgb(recolor.target),tolerance:recolor.tolerance,softness:recolor.softness,strength:recolor.strength}}>{pipeline}</Shader>;
     }else if(stage==='adjustments' && adj && adjustmentEffect){
-      pipeline=<Shader source={adjustmentEffect} uniforms={{brightness:adj.brightness??0,contrast:adj.contrast??0,saturation:adj.saturation??0}}>{pipeline}</Shader>;
+      pipeline=<Shader source={adjustmentEffect} uniforms={adjustmentUniforms(adj,layer.width,layer.height)}>{pipeline}</Shader>;
     }
   }
-  const recolored=<Rect x={0} y={0} width={layer.width} height={layer.height}>{pipeline}</Rect>;
+  // Aparición píxel a píxel la primera vez que se carga la foto (ver useReveal).
+  const recolored = reveal.active && revealEffect
+    ? <Rect x={0} y={0} width={layer.width} height={layer.height}><Shader source={revealEffect} uniforms={reveal.uniforms}>{pipeline}</Shader></Rect>
+    : <Rect x={0} y={0} width={layer.width} height={layer.height}>{pipeline}</Rect>;
+  const revealed = recolored;
   const strokes = [...(layer.maskStrokes ?? []), ...(preview ? [preview] : [])];
   const gpu = gpuWand?.layerId === layer.id && wandEffect ? gpuWand : null;
   const gpuMask = gpu ? <Rect x={0} y={0} width={layer.width} height={layer.height}>
@@ -500,8 +630,10 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand }: { l
       <ImageShader image={image} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />
     </Shader>
   </Rect> : null;
-  if (!strokes.length && !layer.magicMaskUri && !gpu) return recolored;
-  return <Mask mode="alpha" mask={<Group>{gpuMask ?? (wandMask ? <SkiaImage image={wandMask} x={0} y={0} width={layer.width} height={layer.height} fit="fill" /> : <Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />)}{strokes.map(st => <MaskPath key={st.id} stroke={st} />)}</Group>}>{recolored}</Mask>;
+  if (!strokes.length && !layer.magicMaskUri && !gpu) return revealed;
+  return <Mask mode="alpha" mask={<Group layer>{gpuMask ?? (wandMask ? (liq
+    ? <Rect x={0} y={0} width={layer.width} height={layer.height}>{withLiquify(<ImageShader image={wandMask} x={0} y={0} width={layer.width} height={layer.height} fit="fill" tx="clamp" ty="clamp" />, liq.texture, liq.cols, liq.rows, layer.width, layer.height)}</Rect>
+    : <SkiaImage image={wandMask} x={0} y={0} width={layer.width} height={layer.height} fit="fill" />) : <Rect x={0} y={0} width={layer.width} height={layer.height} color="white" />)}{strokes.map(st => <MaskPath key={st.id} stroke={st} alpha />)}</Group>}>{revealed}</Mask>;
 }
 // True projective homography from a rectangle to four target corners.
 // Unlike skew, parallel edges can converge to vanishing points.
@@ -623,6 +755,17 @@ function TextContent({ layer }: { layer: TextLayer }) {
 }
 // React.memo: el documento es inmutable, así que una capa que no cambió conserva la misma referencia y no se
 // vuelve a renderizar cuando se mueve otra capa, se dibuja un trazo o cambia la cámara.
+/** Tamaño natural del texto (sin cortes de línea) con su fuente, en píxeles del documento. */
+export function measureTextLayer(layer: Pick<TextLayer, 'text' | 'fontFamily' | 'fontSize' | 'letterSpacing' | 'lineHeight' | 'align' | 'strokeWidth' | 'color'>) {
+  const b = Skia.ParagraphBuilder.Make({ textAlign: ALIGN[layer.align] ?? TextAlign.Center }, getFontProvider() ?? undefined);
+  b.pushStyle({ fontFamilies: fontFamiliesFor(layer.fontFamily), fontSize: Math.max(1, layer.fontSize), letterSpacing: layer.letterSpacing ?? 0,
+    heightMultiplier: layer.lineHeight, halfLeading: true, color: Skia.Color(layer.color) });
+  b.addText(layer.text.length ? layer.text : ' ');
+  b.pop();
+  const p = b.build();
+  p.layout(1e6);
+  return { width: Math.ceil(p.getMaxIntrinsicWidth()) + 2 + Math.max(0, layer.strokeWidth ?? 0) * 2, height: Math.max(1, p.getHeight()) };
+}
 /** Hueco de foto de una plantilla: marco discontinuo + icono de imagen. Se sustituye con «Poner foto». */
 function PlaceholderContent({ layer }: { layer: ShapeLayer }) {
   const w = layer.width, h = layer.height, m = Math.min(w, h);
@@ -657,7 +800,7 @@ function ShapeContent({ layer }: { layer: ShapeLayer }) {
   if (kind === 'rounded') return <RoundedRect x={0} y={0} width={layer.width} height={layer.height} r={Math.min(layer.width, layer.height) * .18} color={layer.color} />;
   return <Rect x={0} y={0} width={layer.width} height={layer.height} color={layer.color} />;
 }
-const LayerContent = React.memo(function LayerContent({ layer, selected, previewMask, previewStroke, images, cropPreview, gpuWand }: { layer: EditorLayer; selected: boolean; previewMask?: MaskStroke | null; previewStroke?: BrushStroke | null; images?: Record<string, SkImage>; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null }) {
+const LayerContent = React.memo(function LayerContent({ layer, selected, previewMask, previewStroke, images, cropPreview, gpuWand, liquifyPreview }: { layer: EditorLayer; selected: boolean; liquifyPreview?: LiquifyPreview | null; previewMask?: MaskStroke | null; previewStroke?: BrushStroke | null; images?: Record<string, SkImage>; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null }) {
   if (!layer.visible) return null;
   const flipX = layer.type === 'image' && !!layer.flipX;
   const transform = [
@@ -670,7 +813,7 @@ const LayerContent = React.memo(function LayerContent({ layer, selected, preview
       <Group transform={flipX ? [{ translateX: layer.width / 2 }, { scaleX: -1 }, { translateX: -layer.width / 2 }] : undefined}>
         {layer.type === 'image' ? (() => {
           const crop = cropPreview && cropPreview.layerId === layer.id ? cropPreview : null;
-          let body = <ImageContent layer={layer} preview={previewMask} preloaded={images?.[layer.id]} preloadedMask={images?.[`${layer.id}:mask`]} gpuWand={gpuWand} />;
+          let body = <ImageContent layer={layer} preview={previewMask} preloaded={images?.[layer.id]} preloadedMask={images?.[`${layer.id}:mask`]} gpuWand={gpuWand} liquifyPreview={liquifyPreview} />;
           // Straighten preview: the image turns under the fixed crop rectangle.
           if (crop && crop.angle) body = <Group transform={[{ translateX: layer.width / 2 }, { translateY: layer.height / 2 }, { rotate: crop.angle }, { translateX: -layer.width / 2 }, { translateY: -layer.height / 2 }]}>{body}</Group>;
           const projected = (layer.perspectiveX || layer.perspectiveY) ? <Group matrix={perspectiveMatrix(layer.width,layer.height,layer.perspectiveX??0,layer.perspectiveY??0)}>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</Group> : <>{body}{crop && <CropOverlay width={layer.width} height={layer.height} rect={crop.rect} />}</>;
@@ -780,7 +923,7 @@ function hitTest(layers: EditorLayer[], x: number, y: number): EditorLayer | und
   }
 }
 
-export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocument; mode: InteractionMode; brush?: BrushOptions; onPickColor?: (color:string)=>void; onWandPick?: (x:number,y:number)=>void; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null; onLayerRemoved?: (name: string, before: EditorDocument) => void }>(function PhotoCanvas({ document, mode, gpuWand, brush = { color: '#ff508e', size: 20, eraser: false }, onPickColor, onWandPick, cropPreview, onLayerRemoved }, ref) {
+export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocument; mode: InteractionMode; brush?: BrushOptions; onPickColor?: (color:string)=>void; onWandPick?: (x:number,y:number)=>void; cropPreview?: CropPreview | null; gpuWand?: {layerId:string;x:number;y:number;tolerance:number;feather:number}|null; onLayerRemoved?: (name: string, before: EditorDocument) => void; liquify?: LiquifyOptions; frame?: CanvasFrame; onEditText?: (layerId: string) => void }>(function PhotoCanvas({ document, mode, gpuWand, brush = { color: '#ff508e', size: 20, eraser: false }, onPickColor, onWandPick, cropPreview, onLayerRemoved, liquify, frame, onEditText }, ref) {
   const canvas = useRef<React.ElementRef<typeof Canvas>>(null);
   const [pickerHud,setPickerHud]=useState<{x:number;y:number;color:string}|null>(null);
   const pickerCache=useRef<{pixels:Uint8Array|Uint8ClampedArray;width:number;height:number}|null>(null);
@@ -802,6 +945,9 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   modeRef.current = mode;
   const onWandRef = useRef(onWandPick); onWandRef.current = onWandPick;
   const onRemovedRef = useRef(onLayerRemoved); onRemovedRef.current = onLayerRemoved;
+  const onEditTextRef = useRef(onEditText); onEditTextRef.current = onEditText;
+  const liquifyRef = useRef(liquify); liquifyRef.current = liquify;
+  const frameRef = useRef(frame); frameRef.current = frame;
   const onPickRef = useRef(onPickColor);
   onPickRef.current = onPickColor;
   const brushRef = useRef(brush);
@@ -820,9 +966,21 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   const remove = useEditorStore(s => s.remove);
   const beginEdit = useEditorStore(s => s.beginEdit);
   const finishEdit = useEditorStore(s => s.finishEdit);
-  const fit = Math.min(size.width / document.width, size.height / document.height);
-  const offsetX = (size.width - document.width * fit) / 2;
-  const offsetY = (size.height - document.height * fit) / 2;
+  /**
+   * Encaje del documento en la vista. Depende SOLO del tamaño de la vista (constante: los paneles se superponen)
+   * y del marco reservado; abrir o cerrar un panel ya no mueve ni escala la imagen.
+   */
+  const layoutFor = (sz: { width: number; height: number }) => {
+    const top = frameRef.current?.top ?? 0, bottom = frameRef.current?.bottom ?? 0;
+    const availH = Math.max(1, sz.height - top - bottom);
+    const f = Math.min(sz.width / document.width, availH / document.height);
+    return { f, ox: (sz.width - document.width * f) / 2, oy: top + (availH - document.height * f) / 2 };
+  };
+  const { f: fit, ox: offsetX, oy: offsetY } = layoutFor(size);
+  /** El lienzo abre la sesión de edición solo si no hay una abierta (si la hay, el trazo forma parte de ella). */
+  const ownsSession = useRef(false);
+  const openSession = () => { if (useEditorStore.getState().editBaseline) { ownsSession.current = false; return; } beginEdit(); ownsSession.current = true; };
+  const closeSession = () => { if (ownsSession.current) finishEdit(); ownsSession.current = false; };
 
   const toDoc = (px: number, py: number) => {
     const vp = readVp(), sz = sizeRef.current;
@@ -830,8 +988,8 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     const c = Math.cos(vp.rotation), s = Math.sin(vp.rotation);
     const ux = (dx * c + dy * s) / vp.zoom + sz.width / 2;
     const uy = (-dx * s + dy * c) / vp.zoom + sz.height / 2;
-    const f = Math.min(sz.width / document.width, sz.height / document.height);
-    return { x: (ux - (sz.width - document.width * f) / 2) / f, y: (uy - (sz.height - document.height * f) / 2) / f };
+    const { f, ox, oy } = layoutFor(sz);
+    return { x: (ux - ox) / f, y: (uy - oy) / f };
   };
   const toLocal = (d: StrokePoint, layer: EditorLayer): StrokePoint => {
     const cx = layer.x + layer.width / 2, cy = layer.y + layer.height / 2;
@@ -851,10 +1009,69 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     const b = brushRef.current;
     return { id, points, radius: b.size * sizeUnit(), opacity: b.opacity ?? 1, spread: b.spread ?? 20, hardness: b.hardness ?? 1, restore: !!b.restore };
   };
+  // ---- Licuar ---------------------------------------------------------------------------------------------
+  // El campo se edita en un Float32Array mientras el dedo está abajo; al soltar se guarda en la capa (un paso).
+  const liquifyWork = useRef<{ layerId: string; w: number; h: number; field: ReturnType<typeof fieldFrom>; last: StrokePoint; layer: EditorLayer } | null>(null);
+  const [liquifyPreview, setLiquifyPreview] = useState<LiquifyPreview | null>(null);
+  const liquifyFrame = useRef<number | null>(null);
+  const liquifyDirty = useRef(false);
+  /** Radio del pincel en píxeles de la capa: el tamaño del slider es en pantalla, igual a cualquier zoom. */
+  const liquifyRadius = () => (liquifyRef.current?.size ?? 60) / Math.max(.0001, layoutFor(sizeRef.current).f * readVp().zoom);
+  const stampLiquify = (dx = 0, dy = 0, hold = false) => {
+    const w = liquifyWork.current, opt = liquifyRef.current;
+    if (!w || !opt) return;
+    const strength = (opt.strength / 100) * (hold ? .3 : 1);
+    if (applyBrush(w.field, w.w, w.h, { mode: opt.mode, x: w.last.x, y: w.last.y, radius: liquifyRadius(), strength, dx, dy })) liquifyDirty.current = true;
+  };
+  const liquifyTick = () => {
+    liquifyFrame.current = null;
+    const w = liquifyWork.current;
+    if (!w) return;
+    if (liquifyRef.current && liquifyRef.current.mode !== 'push') stampLiquify(0, 0, true); // girar/reducir/ampliar/restaurar actúan mientras se mantiene
+    if (liquifyDirty.current) {
+      liquifyDirty.current = false;
+      const texture = liquifyTexture(w.field, false);
+      if (texture) setLiquifyPreview({ layerId: w.layerId, texture, cols: w.field.cols, rows: w.field.rows });
+    }
+    liquifyFrame.current = requestAnimationFrame(liquifyTick);
+  };
+  const liquifyMove = (x: number, y: number) => {
+    const w = liquifyWork.current;
+    if (!w) return;
+    const p = toLocal(toDoc(x, y), w.layer);
+    const dx = p.x - w.last.x, dy = p.y - w.last.y;
+    w.last = p;
+    if (liquifyRef.current?.mode === 'push' && Math.hypot(dx, dy) > .01) stampLiquify(dx, dy);
+    setWarpCursor({ x, y, radius: liquifyRef.current?.size ?? 60 });
+  };
+  const liquifyEnd = () => {
+    const w = liquifyWork.current;
+    if (!w) return;
+    if (liquifyFrame.current !== null) cancelAnimationFrame(liquifyFrame.current);
+    liquifyFrame.current = null;
+    liquifyWork.current = null;
+    update(w.layerId, { liquify: serializeField(w.field) });
+    setLiquifyPreview(null);
+    setWarpCursor(null);
+    closeSession();
+  };
+  useEffect(() => () => { if (liquifyFrame.current !== null) cancelAnimationFrame(liquifyFrame.current); }, []);
+
   const begin = (x: number, y: number) => {
-    if (active.current) return;
+    if (active.current || liquifyWork.current) return;
     const d = toDoc(x, y);
     if (modeRef.current === 'wand') return;
+    if (modeRef.current === 'liquify') {
+      const current = useEditorStore.getState().document;
+      const layer = current?.layers.find(l => l.id === current.selectedId);
+      if (layer?.type !== 'image' || layer.locked) return;
+      openSession();
+      liquifyWork.current = { layerId: layer.id, w: layer.width, h: layer.height, field: fieldFrom(layer.liquify, layer.width, layer.height), last: toLocal(d, layer), layer };
+      liquifyDirty.current = true;
+      setWarpCursor({ x, y, radius: liquifyRef.current?.size ?? 60 });
+      liquifyTick();
+      return;
+    }
     if (modeRef.current === 'warp') {
       const current=useEditorStore.getState().document;
       const layer=current?.layers.find(l=>l.id===current.selectedId);
@@ -863,13 +1080,13 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       if(pt.x<0||pt.y<0||pt.x>layer.width||pt.y>layer.height)return;
       const pos={x:pt.x/layer.width,y:pt.y/layer.height};
       if(layer.warp.brushMode==='freeze'){
-        beginEdit();
+        openSession();
         const old=layer.warp.frozen??[];
         update(layer.id,{warp:{...layer.warp,frozen:[...old,{...pos,radius:layer.warp.radius}].slice(-8)}});
-        finishEdit();return;
+        closeSession();return;
       }
       warpPointer.current={id:layer.id,last:pos,layer,strokeId:Date.now()};
-      beginEdit();return;
+      openSession();return;
     }
     if (modeRef.current === 'mask') {
       const current = useEditorStore.getState().document;
@@ -877,7 +1094,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       if (!target || target.locked) return;
       const local = toLocal(d, target);
       pendingMask.current = { id: target.id, points: [local] };
-      beginEdit();
+      openSession();
       setPreviewMask(makeMask('preview', [local]));
       return;
     }
@@ -887,7 +1104,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       if (!paint || paint.type !== 'paint' || paint.locked) return;
       const local = toLocal(d, paint);
       pendingStroke.current = { id: paint.id, points: [local] };
-      beginEdit();
+      openSession();
       setPreviewStroke(makeStroke('preview', [local]));
       return;
     }
@@ -898,7 +1115,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       const cx=selected.x+selected.width/2,cy=selected.y+selected.height/2;
       const dx=d.x-cx,dy=d.y-cy,c=Math.cos(selected.rotation),sn=Math.sin(selected.rotation);
       const lx=dx*c+dy*sn+selected.width/2,ly=-dx*sn+dy*c+selected.height/2;
-      const radius=22/Math.max(.15, readVp().zoom * Math.min(sizeRef.current.width/document.width,sizeRef.current.height/document.height));
+      const radius=22/Math.max(.15, readVp().zoom * layoutFor(sizeRef.current).f);
       const handles:[string,number,number][]=[
         ['delete',0,0],['rotate',selected.width,0],['uniform',selected.width,selected.height],
         ['n',selected.width/2,0],['e',selected.width,selected.height/2],
@@ -913,7 +1130,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     }
     const hit = handle ? selected : modeRef.current === 'layer' && current ? hitTest(current.layers, d.x, d.y) : undefined;
     if (modeRef.current === 'layer') select(hit?.id ?? null);
-    if (hit && !hit.locked) beginEdit();
+    if (hit && !hit.locked) openSession();
     active.current = { id: hit?.locked ? null : hit?.id ?? null, layer: hit && !hit.locked ? { ...hit } : null, vp: readVp(), lastX: d.x, lastY: d.y, zoom: 1, rotation: 0, changed: false, handle, startPoint:d };
   };
   // El dedo genera 120+ eventos por segundo; la vista previa se actualiza como mucho una vez por cuadro.
@@ -953,7 +1170,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   };
   const warpDrag=(x:number,y:number)=>{
     const currentLayer=useEditorStore.getState().document?.layers.find(l=>l.id===useEditorStore.getState().document?.selectedId);
-    if(currentLayer?.type==='image'&&currentLayer.warp){const scale=Math.min(sizeRef.current.width/document.width,sizeRef.current.height/document.height)*readVp().zoom;setWarpCursor({x,y,radius:currentLayer.warp.radius*Math.min(currentLayer.width,currentLayer.height)*scale});}
+    if(currentLayer?.type==='image'&&currentLayer.warp){const scale=layoutFor(sizeRef.current).f*readVp().zoom;setWarpCursor({x,y,radius:currentLayer.warp.radius*Math.min(currentLayer.width,currentLayer.height)*scale});}
     const pointer=warpPointer.current;
     if(!pointer)return;
     const layer=useEditorStore.getState().document?.layers.find(l=>l.id===pointer.id);
@@ -973,7 +1190,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     if (!a) return;
     if (a.handle === 'delete') { if (Math.hypot(dx, dy) > 12) a.changed = true; return; } // arrastrar fuera cancela el borrado
     if (modeRef.current === 'layer' && a.layer && a.id) {
-      const vp = a.vp, f = Math.min(sizeRef.current.width / document.width, sizeRef.current.height / document.height);
+      const vp = a.vp, f = layoutFor(sizeRef.current).f;
       const c = Math.cos(vp.rotation), s = Math.sin(vp.rotation);
       const x = (dx * c + dy * s) / (f * vp.zoom), y = (-dx * s + dy * c) / (f * vp.zoom);
       if(a.handle){
@@ -1012,14 +1229,15 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   };
   const end = () => {
     cancelPreviewFrame();
-    if(warpPointer.current){warpPointer.current=null;finishEdit();}
+    liquifyEnd();
+    if(warpPointer.current){warpPointer.current=null;closeSession();}
     setWarpCursor(null);
     if (pendingMask.current) {
       const m = pendingMask.current;
       appendMaskStroke(m.id, makeMask(uid(), m.points));
       pendingMask.current = null;
       setPreviewMask(null);
-      finishEdit();
+      closeSession();
     }
 
     const pending = pendingStroke.current;
@@ -1027,7 +1245,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       appendStroke(pending.id, makeStroke(uid(), pending.points));
       pendingStroke.current = null;
       setPreviewStroke(null);
-      finishEdit();
+      closeSession();
     }
     const a = active.current;
     if (a?.handle === 'delete' && a.id && !a.changed) {
@@ -1036,7 +1254,7 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
       remove(a.id);
       if (before && victim && useEditorStore.getState().document !== before) onRemovedRef.current?.(victim.name, before);
     }
-    if (a?.layer) finishEdit();
+    if (a?.layer) closeSession();
     active.current = null;
   };
   const reset = () => { camZoom.value = 1; camX.value = 0; camY.value = 0; };
@@ -1091,16 +1309,16 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
   // One finger edits the selected object (or paints). Two fingers always navigate
   // the camera: midpoint translation + pinch zoom, independent of selected layer.
   // A second finger must not commit a partial brush stroke as a camera operation.
-  const endIfActive = () => { if (active.current || pendingStroke.current || pendingMask.current || warpPointer.current) end(); };
+  const endIfActive = () => { if (active.current || pendingStroke.current || pendingMask.current || warpPointer.current || liquifyWork.current) end(); };
   const gesture = useMemo(() => {
     const pickerGesture = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(0)
       .onStart(e=>{void preparePicker().then(()=>samplePicker(e.x,e.y,true));})
       .onUpdate(e=>samplePicker(e.x,e.y))
       .onEnd(e=>finishPicker(e.x,e.y))
       .onFinalize(()=>{setPickerHud(null);});
-    const oneFinger = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(mode === 'brush' || mode === 'mask' || mode === 'warp' ? 0 : 2)
+    const oneFinger = Gesture.Pan().runOnJS(true).minPointers(1).maxPointers(1).minDistance(mode === 'brush' || mode === 'mask' || mode === 'warp' || mode === 'liquify' ? 0 : 2)
       .onStart(e => { if(mode !== 'eyedropper')begin(e.x - e.translationX, e.y - e.translationY); })
-      .onUpdate(e => { if(mode !== 'eyedropper') mode === 'warp' ? warpDrag(e.x,e.y) : mode === 'brush' || mode === 'mask' ? drawAt(e.x, e.y) : drag(e.translationX, e.translationY); })
+      .onUpdate(e => { if(mode !== 'eyedropper') mode === 'liquify' ? liquifyMove(e.x,e.y) : mode === 'warp' ? warpDrag(e.x,e.y) : mode === 'brush' || mode === 'mask' ? drawAt(e.x, e.y) : drag(e.translationX, e.translationY); })
       .onFinalize(end);
     // Sin runOnJS: estos callbacks son worklets y escriben directamente en los valores compartidos.
     const twoFinger = Gesture.Pan().minPointers(2).averageTouches(true)
@@ -1109,7 +1327,13 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
     const pinchGesture = Gesture.Pinch()
       .onStart(() => { zoomStart.value = camZoom.value; runOnJS(endIfActive)(); })
       .onUpdate(e => { camZoom.value = Math.max(.2, Math.min(12, zoomStart.value * e.scale)); });
-    const tap = Gesture.Tap().runOnJS(true).onEnd(e => { if (mode === 'wand') { const d=toDoc(e.x,e.y); const current=useEditorStore.getState().document; const l=current?.layers.find(v=>v.id===current.selectedId); if(l?.type==='image'){const pt=toLocal(d,l);onWandRef.current?.(pt.x/l.width,pt.y/l.height);} } else if (mode === 'eyedropper') { void readColors({x:e.x,y:e.y}).then(cs=>{if(cs[0])onPickRef.current?.(cs[0]);}); } else if (mode !== 'brush' && mode !== 'warp') { begin(e.x, e.y); end(); } });
+    const tap = Gesture.Tap().runOnJS(true).onEnd(e => { if (mode === 'wand') { const d=toDoc(e.x,e.y); const current=useEditorStore.getState().document; const l=current?.layers.find(v=>v.id===current.selectedId); if(l?.type==='image'){const pt=toLocal(d,l);onWandRef.current?.(pt.x/l.width,pt.y/l.height);} } else if (mode === 'eyedropper') { void readColors({x:e.x,y:e.y}).then(cs=>{if(cs[0])onPickRef.current?.(cs[0]);}); } else if (mode === 'layer') {
+        // Tocar un texto que ya está seleccionado abre su editor (como un doble toque).
+        const d = toDoc(e.x, e.y), current = useEditorStore.getState().document;
+        const hit = current ? hitTest(current.layers, d.x, d.y) : undefined;
+        if (hit && hit.type === 'text' && !hit.locked && hit.id === current?.selectedId && onEditTextRef.current) { onEditTextRef.current(hit.id); return; }
+        begin(e.x, e.y); end();
+      } else if (mode !== 'brush' && mode !== 'warp') { begin(e.x, e.y); end(); } });
     return mode==='wand' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),tap) : mode==='eyedropper' ? Gesture.Race(Gesture.Simultaneous(twoFinger,pinchGesture),pickerGesture) : Gesture.Race(Gesture.Simultaneous(twoFinger, pinchGesture), oneFinger, tap);
   }, [mode, document.width, document.height]);
 
@@ -1126,11 +1350,11 @@ export const PhotoCanvas = forwardRef<PhotoCanvasHandle, { document: EditorDocum
         <Group origin={{ x: size.width / 2, y: size.height / 2 }} transform={cameraTransform}>
           <Group transform={[{ translateX: offsetX }, { translateY: offsetY }, { scale: fit }]}>
             <DocumentBackground doc={document} />
-            {document.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} previewMask={mode === 'mask' && layer.id === document.selectedId ? previewMask : null} previewStroke={mode === 'brush' && layer.id === document.selectedId ? previewStroke : null} cropPreview={cropPreview?.layerId === layer.id ? cropPreview : null} gpuWand={gpuWand?.layerId === layer.id ? gpuWand : null} />)}
+            {document.layers.map(layer => <LayerContent key={layer.id} layer={layer} selected={mode === 'layer' && layer.id === document.selectedId} previewMask={mode === 'mask' && layer.id === document.selectedId ? previewMask : null} previewStroke={mode === 'brush' && layer.id === document.selectedId ? previewStroke : null} cropPreview={cropPreview?.layerId === layer.id ? cropPreview : null} gpuWand={gpuWand?.layerId === layer.id ? gpuWand : null} liquifyPreview={liquifyPreview?.layerId === layer.id ? liquifyPreview : null} />)}
           </Group>
         </Group>
       </Canvas>
-      {mode==='warp' && warpCursor && <View pointerEvents="none" style={{position:'absolute',left:warpCursor.x-warpCursor.radius,top:warpCursor.y-warpCursor.radius,width:warpCursor.radius*2,height:warpCursor.radius*2,borderRadius:warpCursor.radius,borderWidth:1.5,borderColor:'#18e500',backgroundColor:'rgba(24,229,0,0.07)'}}/>}
+      {(mode==='warp' || mode==='liquify') && warpCursor && <View pointerEvents="none" style={{position:'absolute',left:warpCursor.x-warpCursor.radius,top:warpCursor.y-warpCursor.radius,width:warpCursor.radius*2,height:warpCursor.radius*2,borderRadius:warpCursor.radius,borderWidth:1.5,borderColor:'#18e500',backgroundColor:'rgba(24,229,0,0.07)'}}/>}
       {mode==='eyedropper' && pickerHud && <View pointerEvents="none" style={[styles.pickerHud,{left:Math.max(8,Math.min(size.width-164,pickerHud.x-72)),top:Math.max(8,pickerHud.y-125)}]}>
         <View style={[styles.pickerLens,{backgroundColor:pickerHud.color}]}><View style={styles.pickerCross}/></View>
         <View style={styles.pickerReadout}><View style={[styles.pickerSwatch,{backgroundColor:pickerHud.color}]}/><Text style={styles.pickerHex}>{pickerHud.color.toUpperCase()}</Text></View>

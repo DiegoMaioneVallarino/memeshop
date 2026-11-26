@@ -5,6 +5,7 @@
 import React, { useEffect, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { theme } from './controls';
+import { Glass } from './Glass';
 
 export function PromptModal({ visible, title, initialValue, placeholder, confirmLabel = 'Guardar', onCancel, onConfirm }: {
   visible: boolean; title: string; initialValue: string; placeholder?: string; confirmLabel?: string;
@@ -33,13 +34,13 @@ export type SheetAction = { label: string; onPress: () => void; destructive?: bo
 export function ActionSheet({ visible, title, actions, onClose }: { visible: boolean; title?: string; actions: SheetAction[]; onClose: () => void }) {
   return <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
     <Pressable style={s.sheetBackdrop} onPress={onClose}>
-      <Pressable style={s.sheet} onPress={() => {}}>
+      <Pressable onPress={() => {}}><Glass style={s.sheet}>
         {title ? <Text style={s.sheetTitle} numberOfLines={1}>{title}</Text> : null}
         {actions.map(a => <Pressable key={a.label} onPress={() => { onClose(); setTimeout(a.onPress, Platform.OS === 'ios' ? 350 : 0); }} style={s.sheetItem}>
           <Text style={[s.sheetItemText, a.destructive && { color: theme.danger }]}>{a.label}</Text>
         </Pressable>)}
         <Pressable onPress={onClose} style={[s.sheetItem, { borderBottomWidth: 0 }]}><Text style={[s.sheetItemText, { color: '#888' }]}>Cancelar</Text></Pressable>
-      </Pressable>
+      </Glass></Pressable>
     </Pressable>
   </Modal>;
 }
@@ -64,7 +65,7 @@ const s = StyleSheet.create({
   primary: { backgroundColor: theme.accent, paddingHorizontal: 18, paddingVertical: 10, borderRadius: 10 },
   primaryText: { color: theme.accentInk, fontWeight: '800' },
   sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,.45)', justifyContent: 'flex-end' },
-  sheet: { backgroundColor: '#1f1f1f', borderTopLeftRadius: 18, borderTopRightRadius: 18, paddingBottom: 24, paddingTop: 8 },
+  sheet: { borderTopLeftRadius: 18, borderTopRightRadius: 18, paddingBottom: 24, paddingTop: 8 },
   sheetTitle: { color: '#999', fontSize: 13, textAlign: 'center', paddingVertical: 10, paddingHorizontal: 20 },
   sheetItem: { paddingVertical: 16, alignItems: 'center', borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#333' },
   sheetItemText: { color: '#fff', fontSize: 16, fontWeight: '600' },

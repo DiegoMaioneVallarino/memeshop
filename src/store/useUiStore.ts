@@ -8,10 +8,10 @@ import { initialCrop, type CropState } from '../utils/crop';
 
 export type Tool =
   | 'tools' | 'adjust' | 'brush' | 'layers' | 'add' | 'transform' | 'effects' | 'text' | 'stickers'
-  | 'images' | 'mask' | 'crop' | 'rotate' | 'perspective' | 'wand' | 'warp' | 'shape' | 'templates' | 'canvas' | 'photo';
+  | 'images' | 'mask' | 'crop' | 'rotate' | 'perspective' | 'wand' | 'warp' | 'shape' | 'templates' | 'canvas' | 'photo' | 'liquify' | 'cutout';
 
 /** Herramientas que abren una sesión de edición (Aplicar / Cancelar en la cabecera). */
-export const EDIT_SESSION_TOOLS: Tool[] = ['effects', 'adjust', 'crop', 'rotate', 'perspective', 'warp', 'transform', 'wand', 'brush', 'mask', 'text', 'shape', 'canvas'];
+export const EDIT_SESSION_TOOLS: Tool[] = ['effects', 'adjust', 'crop', 'rotate', 'perspective', 'warp', 'transform', 'wand', 'brush', 'mask', 'text', 'shape', 'canvas', 'liquify', 'cutout'];
 
 export type TextTab = 'Estilos' | 'Fuente' | 'Trazo' | 'Color' | 'Resaltador' | 'Sombra';
 export type BrushSettings = { color: string; size: number; eraser: boolean; opacity: number; hardness: number; spread: number };
@@ -19,6 +19,11 @@ export type MaskSettings = { mode: 'erase' | 'restore'; size: number; opacity: n
 export type WandSettingsUi = { tolerance: number; feather: number; contiguous: boolean };
 export type WandSession = { point: { x: number; y: number } | null; layerId: string | null; working: boolean };
 export type GpuWand = { layerId: string; x: number; y: number; tolerance: number; feather: number };
+import type { LiquifyMode } from '../utils/liquify';
+export type LiquifySettings = { mode: LiquifyMode; size: number; strength: number };
+/** Texto abierto en el editor a pantalla completa. `isNew`: se acaba de crear (Cancelar lo quita). */
+export type TextEditing = { layerId: string; isNew: boolean; closeToolOnCancel: boolean };
+export type AdjustTab = 'luz' | 'color' | 'detalle';
 export type Toast = { id: number; message: string; actionLabel?: string; action?: () => void };
 
 export const DEFAULT_PALETTE = ['#18e500', '#ffffff', '#111111', '#25c5ff', '#ffe05a', '#65e89b'];
@@ -30,6 +35,15 @@ type UiState = {
   templatesOpen: boolean;
   /** Botón de ojo pulsado: el lienzo muestra el «antes». */
   comparing: boolean;
+  liquify: LiquifySettings;
+  textEditing: TextEditing | null;
+  adjustTab: AdjustTab;
+  /** Quitar fondo en revisión: mover el lienzo, o corregir la selección borrando / restaurando. */
+  cutoutBrush: 'view' | 'erase' | 'restore';
+  /** La revisión de quitar fondo se abrió desde «Crear sticker»: al Aplicar se pregunta si guardarlo. */
+  stickerFlow: boolean;
+  /** Ventana «Guardar sticker» abierta para esta capa. */
+  stickerSave: { layerId: string } | null;
   canvasFit: 'fit' | 'fill';
   pickingColor: boolean;
   busy: boolean;
@@ -47,10 +61,11 @@ type UiState = {
   gpuWand: GpuWand | null;
   toast: Toast | null;
 
-  set: (patch: Partial<Omit<UiState, 'set' | 'setBrush' | 'setMask' | 'setWand' | 'setWandSession' | 'showToast' | 'hideToast' | 'resetForDocument'>>) => void;
+  set: (patch: Partial<Omit<UiState, 'set' | 'setBrush' | 'setMask' | 'setWand' | 'setLiquify' | 'setWandSession' | 'showToast' | 'hideToast' | 'resetForDocument'>>) => void;
   setBrush: (patch: Partial<BrushSettings>) => void;
   setMask: (patch: Partial<MaskSettings>) => void;
   setWand: (patch: Partial<WandSettingsUi>) => void;
+  setLiquify: (patch: Partial<LiquifySettings>) => void;
   setWandSession: (patch: Partial<WandSession>) => void;
   showToast: (toast: Omit<Toast, 'id'>) => void;
   hideToast: () => void;
@@ -66,6 +81,12 @@ export const useUiStore = create<UiState>((set) => ({
   stickersOpen: false,
   templatesOpen: false,
   comparing: false,
+  liquify: { mode: 'push', size: 60, strength: 50 },
+  textEditing: null,
+  adjustTab: 'luz',
+  cutoutBrush: 'view',
+  stickerFlow: false,
+  stickerSave: null,
   canvasFit: 'fit',
   pickingColor: false,
   busy: false,
@@ -87,11 +108,12 @@ export const useUiStore = create<UiState>((set) => ({
   setBrush: (patch) => set(s => ({ brush: { ...s.brush, ...patch } })),
   setMask: (patch) => set(s => ({ mask: { ...s.mask, ...patch } })),
   setWand: (patch) => set(s => ({ wand: { ...s.wand, ...patch } })),
+  setLiquify: (patch) => set(s => ({ liquify: { ...s.liquify, ...patch } })),
   setWandSession: (patch) => set(s => ({ wandSession: { ...s.wandSession, ...patch } })),
   showToast: (toast) => set({ toast: { ...toast, id: ++toastId } }),
   hideToast: () => set({ toast: null }),
   resetForDocument: () => set({
-    tool: null, layersOpen: false, stickersOpen: false, templatesOpen: false, comparing: false, pickingColor: false, crop: initialCrop,
+    tool: null, layersOpen: false, stickersOpen: false, templatesOpen: false, comparing: false, textEditing: null, pickingColor: false, crop: initialCrop,
     wandSession: { point: null, layerId: null, working: false }, gpuWand: null, toast: null, filterPreset: 'Ninguno',
   }),
 }));

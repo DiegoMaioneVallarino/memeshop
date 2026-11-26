@@ -2,9 +2,11 @@
 import React from 'react';
 import type { Tool } from '../store/useUiStore';
 import { AdjustPanel } from './adjust/AdjustPanel';
+import { CutoutPanel } from './cutout/CutoutPanel';
 import { CanvasPanel } from './canvas/CanvasPanel';
 import { BrushPanel, MaskPanel } from './brush/BrushPanels';
 import { GeometryPanel } from './crop/GeometryPanel';
+import { LiquifyPanel } from './liquify/LiquifyPanel';
 import { EffectsPanel } from './effects/EffectsPanel';
 import { AddPanel, ToolsGrid } from './grid/ToolGrids';
 import { ShapePanel } from './shape/ShapePanel';
@@ -25,7 +27,9 @@ export const TOOL_PANELS: Partial<Record<Tool, PanelDef>> = {
   crop: { title: 'Recortar', Panel: GeometryPanel },
   rotate: { title: 'Rotar', Panel: GeometryPanel },
   perspective: { title: 'Perspectiva', Panel: GeometryPanel },
-  warp: { title: 'Deformar · GPU', Panel: WarpPanel },
+  warp: { title: 'Distorsión', Panel: WarpPanel },
+  liquify: { title: 'Licuar', Panel: LiquifyPanel },
+  cutout: { title: 'Quitar fondo · revisa la selección', Panel: CutoutPanel },
   wand: { title: 'Varita mágica', Panel: WandPanel },
   text: { title: 'Texto', Panel: TextPanel },
   shape: { title: 'Forma', Panel: ShapePanel },

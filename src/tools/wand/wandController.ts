@@ -4,11 +4,8 @@
  * así que basta con variables de módulo + useUiStore para lo que la interfaz necesita ver.
  */
 import { Alert } from 'react-native';
-import * as FileSystem from 'expo-file-system/legacy';
 import { createMagicMask } from '../../services/magicWand';
 import { releaseMask } from '../../services/maskStore';
-import { saveSticker } from '../../services/stickerLibrary';
-import { renderStickerBase64 } from '../../components/editor/PhotoCanvas';
 import { useEditorStore } from '../../store/useEditorStore';
 import { useUiStore } from '../../store/useUiStore';
 
@@ -74,7 +71,7 @@ export const wand = {
     releaseMask(sessionKey); sessionKey = null; point = null; layerId = null;
     ui().set({ gpuWand: null }); ui().setWandSession({ point: null, layerId: null, working: false });
   },
-  async saveAsSticker(onSaved: () => void) {
+  async saveAsSticker() {
     const layer = useEditorStore.getState().document?.layers.find(l => l.id === layerId);
     const gpu = ui().gpuWand;
     if (!layer || layer.type !== 'image' || (!layer.magicMaskUri && !gpu)) return;
@@ -88,13 +85,8 @@ export const wand = {
         Alert.alert('Máscara aplicada', 'La selección se guardó en la capa. Ahora puedes guardarla como sticker.');
         return;
       }
-      const { base64, width, height } = await renderStickerBase64(layer);
-      const path = `${FileSystem.cacheDirectory}memeshop-sticker-${Date.now()}.png`;
-      await FileSystem.writeAsStringAsync(path, base64, { encoding: FileSystem.EncodingType.Base64 });
-      await saveSticker({ uri: path, width, height, name: `Recorte ${layer.name}` });
-      Alert.alert('Sticker guardado', 'Ya está disponible en tu biblioteca de Stickers.', [
-        { text: 'Seguir editando' }, { text: 'Ver stickers', onPress: onSaved },
-      ]);
+      // Se pregunta nombre y etiquetas antes de guardar (ventana «Guardar sticker»).
+      ui().set({ stickerSave: { layerId: layer.id } });
     } catch (e) { Alert.alert('No se pudo guardar el sticker', String(e)); }
     finally { ui().set({ busy: false }); }
   },

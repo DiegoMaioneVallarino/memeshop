@@ -16,8 +16,9 @@ function relativeDate(ts: number) {
   return new Date(ts).toLocaleDateString();
 }
 
-export function ProjectsHome({ projects, onOpen, onCreate, onDelete, onRename, onDuplicate }: {
-  projects: ProjectMeta[]; onOpen: (p: ProjectMeta) => void; onCreate: () => void;
+/** «Mis proyectos»: la lista completa con búsqueda, pestañas y menú de cada proyecto (se abre desde el inicio). */
+export function ProjectsHome({ projects, onOpen, onCreate, onDelete, onRename, onDuplicate, onBack }: {
+  onBack: () => void; projects: ProjectMeta[]; onOpen: (p: ProjectMeta) => void; onCreate: () => void;
   onDelete: (id: string) => void; onRename: (id: string, name: string) => void; onDuplicate: (id: string) => void;
 }) {
   const [tab, setTab] = useState<Tab>('recent');
@@ -36,10 +37,9 @@ export function ProjectsHome({ projects, onOpen, onCreate, onDelete, onRename, o
   const empty = projects.length === 0;
   return <View style={s.root}>
     <View style={s.header}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-        <Image source={require('../assets/memeshop-logo.png')} style={{ width: 46, height: 46, borderRadius: 11 }} />
-        <View><Text style={s.brand}>MEMESHOP</Text><Text style={s.heading}>Mis archivos</Text></View>
-      </View>
+      <Pressable accessibilityLabel="Volver al inicio" hitSlop={10} onPress={onBack} style={{ padding: 4 }}><Feather name="arrow-left" size={26} color="#111" /></Pressable>
+      <Text style={s.heading}>Mis proyectos</Text>
+      <View style={{ width: 34 }} />
     </View>
     {!empty && <>
       <View style={s.search}>
@@ -90,7 +90,7 @@ const s = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#fff' },
   header: { paddingHorizontal: 24, paddingTop: 18, paddingBottom: 12, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   brand: { fontSize: 12, fontWeight: '800', color: '#148d00' },
-  heading: { fontSize: 31, fontWeight: '700', color: '#111' },
+  heading: { fontSize: 24, fontWeight: '800', color: '#111' },
   search: { marginHorizontal: 18, marginBottom: 12, backgroundColor: '#f0f0f0', borderRadius: 14, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, gap: 8 },
   searchInput: { flex: 1, paddingVertical: 10, color: '#111', fontSize: 15 },
   tabs: { flexDirection: 'row', gap: 10, paddingHorizontal: 18, paddingBottom: 6 },
