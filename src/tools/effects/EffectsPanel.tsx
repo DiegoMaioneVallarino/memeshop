@@ -10,15 +10,15 @@ import { flattenDocument } from '../../editor/actions';
 import { FILTER_CATEGORIES, FILTER_DESCRIPTIONS, RECOLOR_SWATCHES, filterPatch } from './presets';
 import { useFilterPreview } from './previews';
 
-const STAGE_LABELS: Record<EffectStage, string> = { warp: 'Deformación', glitch: 'Glitch', recolor: 'Sustituir color', adjustments: 'Ajustes de color' };
-const DEFAULT_ORDER: EffectStage[] = ['warp', 'glitch', 'recolor', 'adjustments'];
+const STAGE_LABELS: Record<EffectStage, string> = { warp: 'Deformación', glitch: 'Glitch', recolor: 'Sustituir color', adjustments: 'Ajustes de color', colorLab: 'Color Lab' };
+const DEFAULT_ORDER: EffectStage[] = ['warp', 'glitch', 'recolor', 'adjustments', 'colorLab'];
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
 function EffectChain({ layer }: { layer: ImageLayer }) {
   const update = useEditorStore(s => s.update);
-  const order = [...(layer.effectOrder ?? DEFAULT_ORDER)];
+  const order = [...new Set([...(layer.effectOrder ?? DEFAULT_ORDER), ...DEFAULT_ORDER])];
   const disabled = layer.effectDisabled ?? [];
-  const present: Record<EffectStage, boolean> = { warp: !!layer.warp, glitch: !!layer.glitchSettings || !!layer.glitch, recolor: !!layer.colorReplace, adjustments: !!layer.adjustments };
+  const present: Record<EffectStage, boolean> = { warp: !!layer.warp, glitch: !!layer.glitchSettings || !!layer.glitch, recolor: !!layer.colorReplace, adjustments: !!layer.adjustments, colorLab: !!(layer.colorLab?.gradient || layer.colorLab?.palette || layer.colorLab?.dither) };
   const visible = order.filter(k => present[k]);
   if (!visible.length) return null;
   return <View style={s.chain}>
@@ -96,6 +96,7 @@ export function EffectsPanel() {
   return <View style={{ paddingBottom: 12, gap: 8 }}>
     <EffectChain layer={layer} />
     <FilterStrip onPick={name => applyTo(layer, name)} />
+
     {recolor && <View style={s.section}>
       <SectionLabel>Color original</SectionLabel>
       <Swatches colors={RECOLOR_SWATCHES} value={recolor.source} onPick={c => update(layer.id, { colorReplace: { ...recolor, source: c } })} />

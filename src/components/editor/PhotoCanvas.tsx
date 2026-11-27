@@ -1,3 +1,5 @@
+import { colorLabUniforms } from '../../tools/colorLab/core';
+import { COLOR_LAB_SHADER } from '../../tools/colorLab/shader';
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, Text, Keyboard } from 'react-native';
 import { AlphaType, ColorType, Canvas, Group, Image as SkiaImage, Rect, RoundedRect, Oval, Path, DashPathEffect, Circle, Paint, useImage, Mask, Skia, BlurMask, drawAsImage, Shader, ImageShader, Paragraph, TextAlign, PaintStyle, StrokeJoin, ImageFormat } from '@shopify/react-native-skia';
@@ -21,6 +23,7 @@ const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n));
 
 // This stage is composable: it samples the previous shader instead of the original image.
 // Trabaja sin premultiplicar (las imágenes con transparencia no se oscurecen en los bordes).
+const colorLabEffect = Skia.RuntimeEffect.Make(COLOR_LAB_SHADER);
 const adjustmentEffect = Skia.RuntimeEffect.Make(`
  uniform shader source;
  uniform float2 dimensions;
@@ -589,8 +592,9 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand, liqui
     glitch:!!glitch && glitch.mode>0 && !!glitchEffect,
     recolor:!!recolor && !!replaceColorEffect,
     adjustments:hasAdjustments && !!adjustmentEffect,
+    colorLab:!!layer.colorLab && !!colorLabEffect,
   };
-  const defaultOrder:EffectStage[]=['warp','glitch','recolor','adjustments'];
+  const defaultOrder:EffectStage[]=['warp','glitch','recolor','adjustments','colorLab'];
   const ordered=[...(layer.effectOrder??defaultOrder),...defaultOrder].filter((stage,i,all)=>all.indexOf(stage)===i && enabled[stage] && !(layer.effectDisabled??[]).includes(stage));
   // Each stage consumes the previous stage as a shader child. The order is therefore
   // preserved in the canvas and in snapshots/exports that use this same renderer.
@@ -614,6 +618,8 @@ function ImageContent({ layer, preview, preloaded, preloadedMask, gpuWand, liqui
       pipeline=<Shader source={glitchEffect} uniforms={{dimensions:[layer.width,layer.height],mode:glitch.mode,intensity:glitch.intensity,density:glitch.density,seed:glitch.seed}}>{pipeline}</Shader>;
     }else if(stage==='recolor' && recolor && replaceColorEffect){
       pipeline=<Shader source={replaceColorEffect} uniforms={{sourceColor:rgb(recolor.source),targetColor:rgb(recolor.target),tolerance:recolor.tolerance,softness:recolor.softness,strength:recolor.strength}}>{pipeline}</Shader>;
+    }else if(stage==='colorLab' && layer.colorLab && colorLabEffect){
+      pipeline=<Shader source={colorLabEffect} uniforms={colorLabUniforms(layer.colorLab,layer.width,layer.height)}>{pipeline}</Shader>;
     }else if(stage==='adjustments' && adj && adjustmentEffect){
       pipeline=<Shader source={adjustmentEffect} uniforms={adjustmentUniforms(adj,layer.width,layer.height)}>{pipeline}</Shader>;
     }

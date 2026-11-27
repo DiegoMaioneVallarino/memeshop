@@ -7,11 +7,11 @@ import { create } from 'zustand';
 import { initialCrop, type CropState } from '../utils/crop';
 
 export type Tool =
-  | 'tools' | 'adjust' | 'brush' | 'layers' | 'add' | 'transform' | 'effects' | 'text' | 'stickers'
+  | 'color' | 'gradient' | 'palette' | 'dither' | 'tools' | 'adjust' | 'brush' | 'layers' | 'add' | 'transform' | 'effects' | 'text' | 'stickers'
   | 'images' | 'mask' | 'crop' | 'rotate' | 'perspective' | 'wand' | 'warp' | 'shape' | 'templates' | 'canvas' | 'photo' | 'liquify' | 'cutout' | 'collage' | 'scene';
 
 /** Herramientas que abren una sesión de edición (Aplicar / Cancelar en la cabecera). */
-export const EDIT_SESSION_TOOLS: Tool[] = ['effects', 'adjust', 'crop', 'rotate', 'perspective', 'warp', 'transform', 'wand', 'brush', 'mask', 'text', 'shape', 'canvas', 'liquify', 'cutout', 'collage', 'scene'];
+export const EDIT_SESSION_TOOLS: Tool[] = ['gradient', 'palette', 'dither', 'effects', 'adjust', 'crop', 'rotate', 'perspective', 'warp', 'transform', 'wand', 'brush', 'mask', 'text', 'shape', 'canvas', 'liquify', 'cutout', 'collage', 'scene'];
 
 export type TextTab = 'Estilos' | 'Fuente' | 'Trazo' | 'Color' | 'Resaltador' | 'Sombra';
 export type BrushSettings = { color: string; size: number; eraser: boolean; opacity: number; hardness: number; spread: number };

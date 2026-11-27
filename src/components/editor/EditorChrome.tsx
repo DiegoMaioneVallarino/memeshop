@@ -35,7 +35,7 @@ export function EditorHeader({ undo, redo, canUndo, canRedo, exportImage, back, 
 }
 
 const tools: { id: Tool; icon: React.ComponentProps<typeof Feather>['name']; label:string }[] = [
-  {id:'tools',icon:'crop',label:'Herramientas'}, {id:'effects',icon:'zap',label:'Efectos'},
+  {id:'tools',icon:'crop',label:'Herramientas'}, {id:'color',icon:'droplet',label:'Color'}, {id:'effects',icon:'zap',label:'Efectos'},
   {id:'templates',icon:'grid',label:'Plantillas'}, {id:'collage',icon:'hexagon',label:'Collage'}, {id:'scene',icon:'map',label:'Escena'},
   {id:'canvas',icon:'maximize',label:'Lienzo'},
   {id:'text',icon:'type',label:'Texto'},

@@ -10,9 +10,9 @@ export function withoutEffects(doc: EditorDocument): EditorDocument {
   let changed = false;
   const layers = doc.layers.map((l): EditorLayer => {
     if (l.type !== 'image') return l;
-    if (!l.adjustments && !l.glitch && !l.glitchSettings && !l.colorReplace && !l.warp && !l.liquify && !l.perspectiveX && !l.perspectiveY) return l;
+    if (!l.colorLab && !l.adjustments && !l.glitch && !l.glitchSettings && !l.colorReplace && !l.warp && !l.liquify && !l.perspectiveX && !l.perspectiveY) return l;
     changed = true;
-    return { ...l, adjustments: undefined, glitch: 0, glitchSettings: undefined, colorReplace: undefined, warp: undefined, liquify: undefined, perspectiveX: 0, perspectiveY: 0 };
+    return { ...l, colorLab: undefined, adjustments: undefined, glitch: 0, glitchSettings: undefined, colorReplace: undefined, warp: undefined, liquify: undefined, perspectiveX: 0, perspectiveY: 0 };
   });
   return changed ? { ...doc, layers } : doc;
 }

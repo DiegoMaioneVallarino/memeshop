@@ -1,5 +1,6 @@
 /** Qué panel y qué título corresponde a cada herramienta. Añadir una herramienta = una línea aquí + su Panel. */
 import React from 'react';
+import { ColorMenu, GradientPanel, PalettePanel, DitherPanel } from './colorLab/ColorLabPanel';
 import type { Tool } from '../store/useUiStore';
 import { AdjustPanel } from './adjust/AdjustPanel';
 import { CutoutPanel } from './cutout/CutoutPanel';
@@ -19,6 +20,10 @@ import { WarpPanel } from './warp/WarpPanel';
 
 type PanelDef = { title: string; Panel: React.ComponentType };
 export const TOOL_PANELS: Partial<Record<Tool, PanelDef>> = {
+  color: { title: 'Color', Panel: ColorMenu },
+  gradient: { title: 'Gradiente', Panel: GradientPanel },
+  palette: { title: 'Paleta', Panel: PalettePanel },
+  dither: { title: 'Tramado', Panel: DitherPanel },
   tools: { title: 'Herramientas', Panel: ToolsGrid },
   add: { title: 'Añadir elemento', Panel: AddPanel },
   adjust: { title: 'Ajustes de imagen', Panel: AdjustPanel },
